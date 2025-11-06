@@ -157,6 +157,8 @@ class PETRTransformerDecoderLayer(nn.Module):
         )
         
 
+    # 解码器层内把当前 query 与拼接后的 temp_memory 做 self-attention，因此历史/当前查询在 transformer 内对话，
+    # 随后再与多视角特征 cross-attention，达到“query-based 压缩 + 多视角融合” 
     def forward(self, query, key, query_pos, key_pos, attn_mask, temp_memory=None, temp_pos=None):
         """ Forward function for transformer decoder layer
         Args:

@@ -233,6 +233,18 @@ def main():
         meta=meta)
 
 
+# Enable traceback for distributed training
+import torch.distributed.elastic
+import sys
+import traceback
+
+def handle_exception(exc_type, exc_value, exc_traceback):
+    # This will print the full traceback
+    print('\n'.join(traceback.format_exception(exc_type, exc_value, exc_traceback)))
+    sys.__excepthook__(exc_type, exc_value, exc_traceback)
+
+sys.excepthook = handle_exception
+
 if __name__ == '__main__':
     torch.multiprocessing.set_start_method('fork', force=True) # 多进程启动
     main()

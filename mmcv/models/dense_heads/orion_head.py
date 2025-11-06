@@ -519,6 +519,7 @@ class OrionHead(AnchorFreeHead):
             rec_timestamp = torch.zeros_like(rec_score, dtype=torch.float64)
         
         # topk proposals
+        # 维护历史 query 的 embedding/reference/timestamp/ego pose，并在每帧把新的 top-k proposals 写入 memory，形成 query-based memory bank 来承载长期历史
         _, topk_indexes = torch.topk(rec_score, self.topk_proposals, dim=1)
         rec_timestamp = topk_gather(rec_timestamp, topk_indexes)
         rec_reference_points = topk_gather(rec_reference_points, topk_indexes).detach()
@@ -547,6 +548,9 @@ class OrionHead(AnchorFreeHead):
             self.memory_scene_query = torch.cat([history_query.detach(), self.memory_scene_query], dim=1)
         return out_memory
 
+    # 将历史 reference point 归一化后生成 positional encoding， 用 ego pose / 时间 编码对齐。并按 num_propagated 把一部分
+    # 历史query 拼接到当前 query 上，实现 propagation
+    # 注意：这里的 reference point 是归一化后的，所以要先把 ego pose 对齐，再把时间对齐
     def temporal_alignment(self, query_pos, tgt, reference_points):
         B = query_pos.size(0)
 

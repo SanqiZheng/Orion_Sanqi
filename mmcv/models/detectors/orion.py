@@ -543,7 +543,12 @@ class Orion(MVXTwoStageDetector):
             else:
                 loss = self.pts_bbox_head.loss(*loss_inputs)
             losses.update(loss)
-            
+        
+        """
+        BEV 提取为query, 在 forward_pts_train() 中与文本输入一起送入 VLM (LLM + 视觉投影), 随后用生成式规划头把LLM的规划
+        token 解码为轨迹， 实现 "视觉 -> 语言推理 -> 运动规划" 的链路
+        
+        """
         if self.with_map_head:
             outs_lane, map_query = self.map_head(img_metas, pos_embed, **data)
             vision_embeded_map = map_query.clone()
@@ -558,10 +563,12 @@ class Orion(MVXTwoStageDetector):
                 import pickle
                 with open('lane_pts.pkl', 'wb') as file:
                     pickle.dump(lane_pts, file)
-            losses.update(self.map_head.loss(*loss_inputs))
+            losses.update(self.map_head.loss(*loss_inputs))         # 训练/推理时都在同一模块内串联 VLM loss 与规划 loss，使感知、语言推理与控制可以端到端联合优化
 
         if self.with_lm_head:
             if self.use_gen_token:
+                # 训练阶段把检测 query (vision_embeded_obj) 和地图 query (vision_embeded_map) 拼成 scene tokens，
+                # 连同用户指令 token（含历史对话）喂给 lm_head，并取回规划 token 对应的隐向量
                 vision_embeded = torch.cat([vision_embeded_obj, vision_embeded_map], dim=1) # (1, 513, 4096)
                 vlm_loss, ego_feature = self.lm_head(input_ids=input_ids, attention_mask=vlm_attn_mask, labels=vlm_labels, images=vision_embeded, use_cache=False, return_ego_feature=True)
                 if self.mix_qa_training:
@@ -763,7 +770,9 @@ class Orion(MVXTwoStageDetector):
                     #         matched_bbox_result, mapped_class_names)
             
         if self.with_lm_head:
-            history_input_output_id = []
+            # 推理时会累计历史问答 history_input_output_id，在检测到 <waypoint_ego> 请求后一次性送入 LLM，
+            # 并在 inference_ego() 中根据 special token 位置提取其隐藏状态作为 planning token，同时保证对话历史参与注意力
+            history_input_output_id = []        # 累计历史问答
             vision_embeded = torch.cat([vision_embeded_obj, vision_embeded_map], dim=1) # (1, 513, 4096)
             for i, input_ids in enumerate(data['input_ids'][0]):
                 input_ids = input_ids.unsqueeze(0)
@@ -805,7 +814,7 @@ class Orion(MVXTwoStageDetector):
                             distribution_comp = {**distribution_comp, **output_distribution}
 
                         # 2. predict future state from distribution
-                        hidden_states = ego_feature.unsqueeze(1)
+                        hidden_states = ego_feature.unsqueeze(1)     # 添加一个维度
                         states_hs, future_states_hs = \
                             self.future_states_predict(B, sample, hidden_states, current_states)
 
@@ -1168,13 +1177,16 @@ class Orion(MVXTwoStageDetector):
 
         return metric_dict
 
+    # 把 latent sample 复制到 6 个未来时间步，配合由规划 token 切成 4 层的隐藏状态初始化 GRU；
+    # 输出的未来状态与当前状态拼接形成 states_hs，随后逐时间步送入 ego_fut_decoder 生成 6 模式 × 6 时间步的 2D 轨迹点
     def future_states_predict(self, batch_size, sample, hidden_states, current_states):
 
         future_prediction_input = sample.unsqueeze(0).expand(self.fut_ts, -1, -1, -1)
         future_prediction_input = future_prediction_input.reshape(self.fut_ts, -1, self.latent_dim)
 
-        hidden_states = hidden_states.permute(1,0,2) # (4, 1, 4096) -> (1, 4, 4096)
-        hidden_state = hidden_states.reshape(self.layer_dim, -1, int(4096/4)) # (4, 4, 1024)
+        # hidden_states (用于未来状态预测)
+        hidden_states = hidden_states.permute(1,0,2) # (4, 1, 4096) -> (1, 4, 4096)         重新排列维度顺序，不改变维度
+        hidden_state = hidden_states.reshape(self.layer_dim, -1, int(4096/4)) # (4, 4, 1024)   reshape可改变维度数量，3维变4维
         future_states = self.predict_model(future_prediction_input, hidden_state)
 
         current_states_hs = current_states.unsqueeze(0).repeat(6, 1, 1, 1)
@@ -1385,6 +1397,8 @@ class Orion(MVXTwoStageDetector):
 
         return gt_trajs.reshape(batch_size, gt_trajs.shape[1], -1)
 
+    # distribution_forward() 先基于规划 token 得到 present 分布 (μ, σ)，若提供 GT 未来轨迹则拼接后得到 
+    # future 分布；训练用 future 分布采样、推理用 present 分布，采样结果再沿时间步展开成 GRU 输入
     def distribution_forward(self, present_features, future_distribution_inputs=None, noise=None):
 
         b = present_features.shape[0]

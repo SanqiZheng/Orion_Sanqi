@@ -46,6 +46,8 @@ class LlavaMetaForCausalLM(ABC):
     def get_vision_tower(self):
         return self.get_model().get_vision_tower()
 
+    # prepare_inputs_labels_for_multimodal() 把文本里的 <image> 占位符替换为视觉序列，统一 padding/attention mask，
+    # 因此 scene tokens 与文本 token 共用自注意力空间 
     def prepare_inputs_labels_for_multimodal(
         self, input_ids, position_ids, attention_mask, past_key_values, labels, image_features, image_sizes
     ):

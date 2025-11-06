@@ -5,7 +5,8 @@ from mmcv.models.builder import LOSSES
 
 from .layers import Bottleneck
 
-
+# 规划模块在启用生成 token 时实例化 present/future 两个 DistributionModule（卷积 encoder + 1D 聚合）和 
+# PredictModel GRU，latent 维度 32、隐藏通道 4096/4，用于学习语义推理到轨迹的生成映射 
 class DistributionModule(nn.Module):
     """
     A convolutional net that parametrises a diagonal Gaussian distribution.
@@ -129,6 +130,8 @@ class PredictModel(nn.Module):
         x = self.linear3(x)
         return x
 
+# 通过 KL 散度把 present/future 分布拉近，从而约束“语言推理空间”(planning token) 与 “行动空间”(轨迹) 的一致性；
+# 采样→GRU→解码流程完成 reasoning space → latent space → action space 的连续映射
 @LOSSES.register_module()
 class ProbabilisticLoss(nn.Module):
     def __init__(self, loss_weight=1.0):

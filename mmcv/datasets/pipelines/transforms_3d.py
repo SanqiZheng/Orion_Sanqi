@@ -867,6 +867,9 @@ class ResizeCropFlipRotImage():
             rotate = 0
         return resize, resize_dims, crop, flip, rotate
 
+
+#  会按需拼接普通 VQA 对话与规划 QA 模板（human 提问 + gpt 回复中包含 <waypoint_ego>），
+# 从而把“生成轨迹”转成语言任务，同时支持只保留规划 QA 或与通用 QA 混合
 @PIPELINES.register_module()
 class LoadAnnoatationVQA():
     def __init__(
@@ -1072,6 +1075,8 @@ class LoadAnnoatationVQA():
         cleaned_text = re.sub(pattern, '', text)
         return cleaned_text
 
+# zhangxin TODO
+# 训练或推理时，LLM 在看到该模板后必须生成 <waypoint_ego>，对应隐藏状态即规划 token，后续模块无需解析文本。
 @PIPELINES.register_module()
 class LoadAnnoatationCriticalVQATest():
     def __init__(
