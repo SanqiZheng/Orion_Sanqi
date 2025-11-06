@@ -144,10 +144,10 @@ We provide some visualization videos and qualitatively analysis for Orion and co
 If this work is helpful for your research, please consider citing:
 
 ```
-@article{fu2025orion,
+@inproceedings{fu2025orion,
   title={ORION: A Holistic End-to-End Autonomous Driving Framework by Vision-Language Instructed Action Generation},
   author={Haoyu Fu and Diankun Zhang and Zongchuang Zhao and Jianfeng Cui and Dingkang Liang and Chong Zhang and Dingyuan Zhang and Hongwei Xie and Bing Wang and Xiang Bai},
-  journal={arXiv:2503.19755},
+  booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision},
   year={2025}
 }
 ```
