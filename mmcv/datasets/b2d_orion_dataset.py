@@ -42,7 +42,8 @@ import math
 
 @DATASETS.register_module()
 class B2DOrionDataset(Custom3DDataset):
-    def __init__(self, queue_length=4, seq_mode=False, seq_split_num=1, overlap_test=False,with_velocity=True,sample_interval=5,name_mapping= None,eval_cfg = None, map_root =None,map_file=None,past_frames=2, future_frames=6,point_cloud_range = [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0] ,polyline_points_num=20,*args, eval_mode=['lane', 'det'], **kwargs):
+    def __init__(self, queue_length=4, seq_mode=False, seq_split_num=1, overlap_test=False,with_velocity=True,sample_interval=5,name_mapping= None,eval_cfg = None, map_root =None,map_file=None,past_frames=2, future_frames=6,point_cloud_range = [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0] ,polyline_points_num=20, limit_samples=None, *args, eval_mode=['lane', 'det'], **kwargs):
+        self.limit_samples = limit_samples  # 🔥 添加样本数量限制
         super().__init__(*args, **kwargs)
         self.queue_length = queue_length
         self.overlap_test = overlap_test
@@ -71,6 +72,27 @@ class B2DOrionDataset(Custom3DDataset):
             self.seq_split_num = seq_split_num
             self.random_length = 0
             self._set_sequence_group_flag() # Must be called after load_annotations b/c load_annotations does sorting.
+        
+        # 🔥 限制样本数量（用于调试和流程测试）
+        if self.limit_samples is not None and self.limit_samples > 0:
+            original_len = len(self.data_infos)
+            self.data_infos = self.data_infos[:self.limit_samples]
+            print(f"⚠️  数据集限制：{original_len} → {len(self.data_infos)} 样本（仅用于流程测试）")
+            # 重新设置group flag
+            if hasattr(self, 'flag') and len(self.flag) > self.limit_samples:
+                self.flag = self.flag[:self.limit_samples]
+
+    def _normalize_name(self, name):
+        if getattr(self, 'NameMapping', None) is not None and name in self.NameMapping:
+            return self.NameMapping[name]
+        lower = name.lower()
+        if lower.startswith('traffic.traffic_light'):
+            return 'traffic_light'
+        if lower.startswith('traffic.speed_limit') or 'traffic.stop' in lower or 'traffic.yield' in lower:
+            return 'traffic_sign'
+        if 'traffic_cone' in lower or 'warningconstruction' in lower or 'warningaccident' in lower or 'traffic.warning' in lower:
+            return 'traffic_cone'
+        return name
 
     def _set_sequence_group_flag(self):
         """
@@ -183,8 +205,7 @@ class B2DOrionDataset(Custom3DDataset):
         info = self.data_infos[index]
 
         for i in range(len(info['gt_names'])):
-            if info['gt_names'][i] in self.NameMapping.keys():
-                info['gt_names'][i] = self.NameMapping[info['gt_names'][i]]
+            info['gt_names'][i] = self._normalize_name(info['gt_names'][i])
         
         ego2global = np.linalg.inv(info['sensors']['LIDAR_TOP']['world2lidar'])  # in fact, lidar2global
         ego_pose = ego2global
@@ -361,8 +382,7 @@ class B2DOrionDataset(Custom3DDataset):
         # filter out bbox containing no points
 
         for i in range(len(info['gt_names'])):
-            if info['gt_names'][i] in self.NameMapping.keys():
-                info['gt_names'][i] = self.NameMapping[info['gt_names'][i]]
+            info['gt_names'][i] = self._normalize_name(info['gt_names'][i])
         mask = (info['num_points'] != 0)
         gt_bboxes_3d = info['gt_boxes'][mask]
         gt_names_3d = info['gt_names'][mask]
@@ -523,7 +543,7 @@ class B2DOrionDataset(Custom3DDataset):
             sample_data = self.data_infos[i]
             gt_boxes = sample_data['gt_boxes']
             for j in range(gt_boxes.shape[0]):
-                class_name = self.NameMapping[sample_data['gt_names'][j]]
+                class_name = self._normalize_name(sample_data['gt_names'][j])
                 if not class_name in self.eval_cfg['class_range'].keys():
                     continue
                 range_x, range_y = self.eval_cfg['class_range'][class_name]

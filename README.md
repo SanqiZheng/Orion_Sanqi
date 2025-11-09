@@ -81,6 +81,7 @@ unzip Chat-B2D.zip -d data/
 We use Chat-B2D data for pre-training:
 ``` 
 ./adzoo/orion/orion_dist_train.sh adzoo/orion/configs/orion_stage1_train.py $GPUS
+./adzoo/orion/orion_dist_train.sh adzoo/orion/configs/orion_stage1_train_minimal.py
 ```
 
 After the stage1 training is completed, you can start the stage2/3 training using the following commands (Remember to change the load_from in the cfg):

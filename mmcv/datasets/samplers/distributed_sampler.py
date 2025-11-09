@@ -1,6 +1,5 @@
-import math
-
 import torch
+import math  # 添加math模块导入
 from torch.utils.data import DistributedSampler as _DistributedSampler
 from .sampler import SAMPLER
 
@@ -25,6 +24,10 @@ class DistributedSampler(_DistributedSampler):
             assert False
         else:
             indices = torch.arange(len(self.dataset)).tolist()
+
+        # 添加对空数据集的检查
+        if len(indices) == 0:
+            return iter([])
 
         # add extra samples to make it evenly divisible
         # in case that indices is shorter than half of total_size

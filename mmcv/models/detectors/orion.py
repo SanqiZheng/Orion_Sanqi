@@ -500,40 +500,51 @@ class Orion(MVXTwoStageDetector):
 
         return losses
 
-
+    # 训练阶段的前向传播函数，实现感知-语言推理-运动规划的端到端训练
+    # 目标检测模块： 检测周围环境中的物体
+    # 地图建模模块： 理解和建模道路结构
+    # 视觉语言模型： 将视觉信息与语言指令结合，进行推理和规划
+    # 输出： TODO
     def forward_pts_train(self,
-                          gt_bboxes_3d,
-                          gt_labels_3d,
-                          gt_attr_labels,
-                          map_gt_bboxes_3d,
-                          map_gt_labels_3d,   
-                          img_metas,
-                          input_ids, 
-                          vlm_labels, 
-                          vlm_attn_mask,
-                          ego_fut_trajs,
-                          **data):
+                          gt_bboxes_3d,             # 每个样本的3D边界框真值，用于目标检测监督
+                          gt_labels_3d,             # 3D边界框类别真值，用于目标分类监督
+                          gt_attr_labels,           # 每个样本的目标属性标签真值，用于属性分类监督，如车辆类型、状态
+                          map_gt_bboxes_3d,         # 每个样本的地图元素3D边界框真值，用于地图元素检测监督 如车道线、路标
+                          map_gt_labels_3d,         # 地图元素标签真值，用于地图元素分类
+                          img_metas,                # 图像元信息，包含相机参数、变换矩阵等
+                          input_ids,                # 输入文本的token ID序列，用于语言模型输入
+                          vlm_labels,               # 视觉语言模型的标签，用于语言模型训练监督
+                          vlm_attn_mask,            # 视觉语言模型的注意力掩码，标识有效token位置
+                          ego_fut_trajs,            # 自车未来轨迹真值，用于轨迹规划监督
+                          **data):                   # 其他数据，包含图像、传感器信息等
         """Forward function for point cloud branch.
         Args:
             pts_feats (list[torch.Tensor]): Features of point cloud branch
-            gt_bboxes_3d (list[:obj:`BaseInstance3DBoxes`]): Ground truth
-                boxes for each sample.
-            gt_labels_3d (list[torch.Tensor]): Ground truth labels for
-                boxes of each sampole
+            gt_bboxes_3d (list[:obj:`BaseInstance3DBoxes`]): Ground truth boxes for each sample.
+            gt_labels_3d (list[torch.Tensor]): Ground truth labels for boxes of each sampole
             img_metas (list[dict]): Meta information of samples.
-            gt_bboxes_ignore (list[torch.Tensor], optional): Ground truth
-                boxes to be ignored. Defaults to None.
+            gt_bboxes_ignore (list[torch.Tensor], optional): Ground truth boxes to be ignored. Defaults to None.
         Returns:
             dict: Losses of each branch.
         """
-        B = data['img'].shape[0]
-        location = self.prepare_location(img_metas, **data) # (6, 40, 40, 2)
-        pos_embed = self.position_embeding(data, location, img_metas) # (1, 9600, 256)
-        losses = dict()
+        B = data['img'].shape[0]        # 获取 batch_size 
+            # 添加你的调试打印
+        print("="*80)
+        print(f"Batch Size: {B}")
+        print(f"Image Shape: {data['img'].shape}")
+        print("="*80)
+        location = self.prepare_location(img_metas, **data) # (6, 40, 40, 2) BEV 空间的位置坐标
+        print(f"✓ Location: {location.shape}")
+        print(f"✓ Location Min/Max: {location.min().item():.4f} / {location.max().item():.4f}")
+        pos_embed = self.position_embeding(data, location, img_metas) # (1, 9600, 256)      位置编码
+        print(f"✓ Position Embedding: {pos_embed.shape}")
+        print(f"✓ Position Embedding Min/Max: {pos_embed.min().item():.4f} / {pos_embed.max().item():.4f}")
+        losses = dict()  
 
-        if self.with_pts_bbox:
+        if self.with_pts_bbox:              # 如果启用了目标检测头
+            # OrionHead类的一个实例 检测头处理 ： 输入位置编码，输出检测结果和检测query
             outs_bbox, det_query = self.pts_bbox_head(img_metas, pos_embed, **data) # (1, 257, 4096)
-            vision_embeded_obj = det_query.clone()
+            vision_embeded_obj = det_query.clone()  # 保存检测query，后续用于VLM输入
             loss_inputs = [gt_bboxes_3d, gt_labels_3d, outs_bbox, gt_attr_labels]
             if self.pts_bbox_head.pred_traffic_light_state:
                 loss_inputs.append(data['traffic_state'])

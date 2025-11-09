@@ -77,12 +77,16 @@ def custom_train_detector(model,
             device_ids=[torch.cuda.current_device()],
             broadcast_buffers=False,
             find_unused_parameters=find_unused_parameters)
+        # 添加 _set_static_graph() 调用以解决变量被多次标记为 ready 的错误
+        model._set_static_graph()
         if eval_model is not None:
             eval_model = DistributedDataParallel(
                 eval_model.cuda(),
                 device_ids=[torch.cuda.current_device()],
                 broadcast_buffers=False,
                 find_unused_parameters=find_unused_parameters)
+            # 为 eval_model 也添加 _set_static_graph() 调用
+            eval_model._set_static_graph()
     else:
         model = DataParallel(
             model.cuda(cfg.gpu_ids[0]), device_ids=cfg.gpu_ids)
@@ -188,4 +192,3 @@ def custom_train_detector(model,
     elif cfg.load_from:
         runner.load_checkpoint(cfg.load_from)
     runner.run(data_loaders, cfg.workflow)
-

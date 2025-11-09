@@ -173,12 +173,15 @@ eval_pipeline = [
     dict(type='Collect3D', keys=['points'])
 ]
 data = dict(
-    samples_per_gpu=4,
-    workers_per_gpu=4,
+    samples_per_gpu=1,
+    workers_per_gpu=0,  # 0表示主进程加载，避免多进程内存开销
     train=dict(
         type='B2DOrionDataset',
         data_root='data/bench2drive',
         ann_file='data/infos/b2d_infos_train.pkl',
+        # 🔥 关键：限制训练数据量，只加载极少量样本用于流程测试
+        test_mode=False,
+        limit_samples=5,  # ⚠️ 只加载5个样本！
         pipeline=[
             dict(type='LoadMultiViewImageFromFilesInCeph', to_float32=True),
             dict(type='PhotoMetricDistortionMultiViewImage'),
@@ -412,6 +415,7 @@ data = dict(
         type='B2DOrionDataset',
         data_root='data/bench2drive',
         ann_file='data/infos/b2d_infos_val.pkl',
+        limit_samples=3,  # ⚠️ 验证集只加载3个样本
         pipeline=[
             dict(type='LoadMultiViewImageFromFilesInCeph', to_float32=True),
             dict(
@@ -675,6 +679,7 @@ data = dict(
         type='B2DOrionDataset',
         data_root='data/bench2drive',
         ann_file='data/infos/b2d_infos_val.pkl',
+        limit_samples=3,  # ⚠️ 测试集只加载3个样本
         pipeline=[
             dict(type='LoadMultiViewImageFromFilesInCeph', to_float32=True),
             dict(
@@ -940,89 +945,15 @@ data = dict(
         warmup_split_num=80,
         num_iters_to_seq=1834),
     nonshuffler_sampler=dict(type='DistributedSampler'))
-evaluation = dict(
-    interval=12838,
-    pipeline=[
-        dict(type='LoadMultiViewImageFromFilesInCeph', to_float32=True),
-        dict(
-            type='LoadAnnotations3D',
-            with_bbox_3d=True,
-            with_label_3d=True,
-            with_attr_label=True),
-        dict(
-            type='VADObjectRangeFilter',
-            point_cloud_range=[-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]),
-        dict(
-            type='VADObjectNameFilter',
-            classes=[
-                'car', 'van', 'truck', 'bicycle', 'traffic_sign',
-                'traffic_cone', 'traffic_light', 'pedestrian', 'others'
-            ]),
-        dict(
-            type='ResizeCropFlipRotImage',
-            data_aug_conf=dict(
-                resize_lim=(0.37, 0.45),
-                final_dim=(320, 640),
-                bot_pct_lim=(0.0, 0.0),
-                rot_lim=(0.0, 0.0),
-                H=900,
-                W=1600,
-                rand_flip=False),
-            training=False),
-        dict(
-            type='ResizeMultiview3D',
-            img_scale=(640, 640),
-            keep_ratio=False,
-            multiscale_mode='value'),
-        dict(
-            type='NormalizeMultiviewImage',
-            mean=[123.675, 116.28, 103.53],
-            std=[58.395, 57.12, 57.375],
-            to_rgb=True),
-        dict(type='PadMultiViewImage', size_divisor=32),
-        dict(
-            type='LoadAnnoatationCriticalVQATest',
-            load_type=['critical_qa'],
-            tokenizer='ckpts/pretrain_qformer/',
-            use_gen_token=False,
-            max_length=2048),
-        dict(
-            type='MultiScaleFlipAug3D',
-            img_scale=(1333, 800),
-            pts_scale_ratio=1,
-            flip=False,
-            transforms=[
-                dict(
-                    type='PETRFormatBundle3D',
-                    collect_keys=[
-                        'lidar2img', 'cam_intrinsic', 'timestamp', 'ego_pose',
-                        'ego_pose_inv', 'command'
-                    ],
-                    class_names=[
-                        'car', 'van', 'truck', 'bicycle', 'traffic_sign',
-                        'traffic_cone', 'traffic_light', 'pedestrian', 'others'
-                    ],
-                    with_label=False),
-                dict(
-                    type='CustomCollect3D',
-                    keys=[
-                        'gt_bboxes_3d', 'gt_labels_3d', 'img', 'ego_his_trajs',
-                        'input_ids', 'gt_attr_labels', 'ego_fut_trajs',
-                        'ego_fut_masks', 'ego_fut_cmd', 'ego_lcf_feat',
-                        'vlm_labels', 'can_bus', 'fut_valid_flag', 'lidar2img',
-                        'cam_intrinsic', 'timestamp', 'ego_pose',
-                        'ego_pose_inv', 'command'
-                    ])
-            ])
-    ])
-checkpoint_config = dict(interval=1834, max_keep_ckpts=3)
+evaluation = dict(interval=999999, pipeline=None)
+checkpoint_config = dict(interval=999999, max_keep_ckpts=1)
 log_config = dict(
-    interval=10,
+    interval=1,
     hooks=[dict(type='TextLoggerHook'),
            dict(type='TensorboardLoggerHook')])
 dist_params = dict(backend='nccl')
 log_level = 'INFO'
-work_dir = 'adzoo/orion/work_dirs/orion_stage1_train/'
+work_dir = 'adzoo/orion/work_dirs/debug_20251108_235336/'
 load_from = 'ckpts/eva02_petr_proj.pth'
 resume_from = None
 workflow = [('train', 1)]
@@ -1225,10 +1156,20 @@ predict_steps = 12
 predict_modes = 6
 use_nonlinear_optimizer = True
 use_memory = True
-num_gpus = 32
-batch_size = 4
-num_iters_per_epoch = 1834
-num_epochs = 6
+num_gpus = 1
+batch_size = 1
+num_iters_per_epoch = 3  # 只运行3个iter（对应3个batch）
+num_epochs = 1  # 只训练1个epoch
+
+# 打印配置说明
+print("=" * 80)
+print("🚫 LLM 已完全禁用配置")
+print("   tokenizer = None")
+print("   lm_head = None")
+print("   训练样本: 5 个")
+print("   迭代次数: 3")
+print("   预期内存: < 12GB（不含LLM的13GB）")
+print("=" * 80)
 llm_path = 'ckpts/pretrain_qformer/'
 use_gen_token = False
 collect_keys = [
@@ -1243,8 +1184,9 @@ model = dict(
     use_grid_mask=True,
     frozen=False,
     use_lora=True,
-    tokenizer='ckpts/pretrain_qformer/',
-    lm_head='ckpts/pretrain_qformer/',
+    # 🔥🔥🔥 禁用LLM - 防止13GB模型加载导致死机！
+    tokenizer=None,  # 'ckpts/pretrain_qformer/',
+    lm_head=None,    # 'ckpts/pretrain_qformer/',
     use_gen_token=False,
     use_diff_decoder=False,
     use_col_loss=False,
@@ -1268,7 +1210,7 @@ model = dict(
         qkv_bias=True,
         drop_path_rate=0.3,
         flash_attn=True,
-        with_cp=True,
+        with_cp=True,  # 启用梯度检查点，大幅减少显存占用（约30-50%）
         frozen=False),
     map_head=dict(
         type='OrionHeadM',
@@ -1403,7 +1345,8 @@ model = dict(
                 cls_cost=dict(type='FocalLossCost', weight=2.0),
                 reg_cost=dict(type='BBox3DL1Cost', weight=0.25),
                 iou_cost=dict(type='IoUCost', weight=0.0),
-                pc_range=[-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]))))
+                pc_range=[-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]))),
+    freeze_backbone=True)  # 冻结backbone减少内存占用
 info_root = 'data/infos'
 map_root = 'data/bench2drive/maps'
 map_file = 'data/infos/b2d_map_infos.pkl'
@@ -1463,5 +1406,6 @@ lr_config = dict(
     warmup_ratio=0.3333333333333333,
     min_lr_ratio=0.001)
 find_unused_parameters = False
-runner = dict(type='IterBasedRunner', max_iters=11004)
+runner = dict(type='IterBasedRunner', max_iters=5)
+fp16 = dict(loss_scale='dynamic')
 gpu_ids = range(0, 1)
