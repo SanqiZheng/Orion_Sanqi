@@ -409,6 +409,10 @@ NameMapping = dict({
     'vehicle.carlamotors.cab_2021_xlight': 'car'
 })
 
+class_names = [
+'car','van','truck','bicycle','traffic_sign','traffic_cone','traffic_light','pedestrian','others'
+]
+
 # 评估配置
 eval_cfg = dict(
     dist_ths=[0.5, 1.0, 2.0, 4.0],
@@ -443,7 +447,7 @@ predict_modes = 6
 use_nonlinear_optimizer = True
 use_memory = True
 
-# 🔥 关键：最小化配置
+# 🔥 关键：最小化配置  TODO 此处相较原始有更改
 num_gpus = 1
 batch_size = 1
 num_iters_per_epoch = 3  # 只运行3个iter测试流程
@@ -455,189 +459,7 @@ collect_keys = ['lidar2img', 'cam_intrinsic', 'timestamp', 'ego_pose', 'ego_pose
 pretrain = True
 use_col_loss = False
 
-# 数据配置
-dataset_type = 'B2DOrionDataset'
-data_root = 'data/bench2drive'
-info_root = 'data/infos'
-map_root = 'data/bench2drive/maps'
-map_file = 'data/infos/b2d_map_infos.pkl'
-ann_file_train = 'data/infos/b2d_infos_train.pkl'
-ann_file_val = 'data/infos/b2d_infos_val.pkl'
 
-# Pipeline 配置
-train_pipeline = [
-    dict(type='LoadMultiViewImageFromFilesInCeph', to_float32=True),
-    dict(type='PhotoMetricDistortionMultiViewImage'),
-    dict(
-        type='LoadAnnotations3D',
-        with_bbox_3d=True,
-        with_label_3d=True,
-        with_attr_label=True,
-        with_light_state=True),
-    dict(
-        type='VADObjectRangeFilter',
-        point_cloud_range=point_cloud_range),
-    dict(
-        type='VADObjectNameFilter',
-        classes=['car', 'van', 'truck', 'bicycle', 'traffic_sign', 'traffic_cone',
-                'traffic_light', 'pedestrian', 'others']),
-    # 🔥 暂时注释掉VQA加载（需要tokenizer）
-    # dict(
-    #     type='LoadAnnoatationVQA',
-    #     base_desc_path='./data/chat-B2D/train',
-    #     tokenizer=llm_path,
-    #     max_length=2048,
-    #     use_gen_token=use_gen_token,
-    #     pretrain=pretrain),
-    dict(
-        type='ResizeCropFlipRotImage',
-        data_aug_conf=ida_aug_conf,
-        training=True),
-    dict(
-        type='ResizeMultiview3D',
-        img_scale=(640, 640),
-        keep_ratio=False,
-        multiscale_mode='value'),
-    dict(type='PadMultiViewImage', size_divisor=32),
-    dict(
-        type='NormalizeMultiviewImage',
-        mean=[123.675, 116.28, 103.53],
-        std=[58.395, 57.12, 57.375],
-        to_rgb=True),
-    dict(
-        type='PETRFormatBundle3D',
-        class_names=['car', 'van', 'truck', 'bicycle', 'traffic_sign', 'traffic_cone',
-                    'traffic_light', 'pedestrian', 'others'],
-        collect_keys=collect_keys),
-    dict(
-        type='CustomCollect3D',
-        keys=[
-            'gt_bboxes_3d', 'gt_labels_3d', 'img', 'ego_his_trajs',
-            # 'input_ids', 'vlm_labels',  # VQA相关，已移除
-            'gt_attr_labels', 'ego_fut_trajs', 'ego_fut_masks',
-            'ego_fut_cmd', 'ego_lcf_feat', 'can_bus',
-            'traffic_state_mask', 'traffic_state', 'lidar2img',
-            'cam_intrinsic', 'timestamp', 'ego_pose', 'ego_pose_inv', 'command'
-        ])
-]
-
-test_pipeline = [
-    dict(type='LoadMultiViewImageFromFilesInCeph', to_float32=True),
-    dict(
-        type='LoadAnnotations3D',
-        with_bbox_3d=True,
-        with_label_3d=True,
-        with_attr_label=True),
-    dict(
-        type='VADObjectRangeFilter',
-        point_cloud_range=point_cloud_range),
-    dict(
-        type='VADObjectNameFilter',
-        classes=['car', 'van', 'truck', 'bicycle', 'traffic_sign', 'traffic_cone',
-                'traffic_light', 'pedestrian', 'others']),
-    dict(
-        type='ResizeCropFlipRotImage',
-        data_aug_conf=ida_aug_conf,
-        training=False),
-    dict(
-        type='ResizeMultiview3D',
-        img_scale=(640, 640),
-        keep_ratio=False,
-        multiscale_mode='value'),
-    dict(
-        type='NormalizeMultiviewImage',
-        mean=[123.675, 116.28, 103.53],
-        std=[58.395, 57.12, 57.375],
-        to_rgb=True),
-    dict(type='PadMultiViewImage', size_divisor=32),
-    # 🔥 暂时注释掉VQA加载（需要tokenizer）
-    # dict(
-    #     type='LoadAnnoatationCriticalVQATest',
-    #     load_type=['critical_qa'],
-    #     tokenizer=llm_path,
-    #     use_gen_token=use_gen_token,
-    #     max_length=2048),
-    dict(
-        type='MultiScaleFlipAug3D',
-        img_scale=(1333, 800),
-        pts_scale_ratio=1,
-        flip=False,
-        transforms=[
-            dict(
-                type='PETRFormatBundle3D',
-                collect_keys=collect_keys,
-                class_names=['car', 'van', 'truck', 'bicycle', 'traffic_sign',
-                            'traffic_cone', 'traffic_light', 'pedestrian', 'others'],
-                with_label=False),
-            dict(
-                type='CustomCollect3D',
-                keys=[
-                    'gt_bboxes_3d', 'gt_labels_3d', 'img', 'ego_his_trajs',
-                    # 'input_ids', 'vlm_labels',  # VQA相关，已移除
-                    'gt_attr_labels', 'ego_fut_trajs',
-                    'ego_fut_masks', 'ego_fut_cmd', 'ego_lcf_feat',
-                    'can_bus', 'fut_valid_flag', 'lidar2img',
-                    'cam_intrinsic', 'timestamp', 'ego_pose', 'ego_pose_inv', 'command'
-                ])
-        ])
-]
-
-# 🔥 数据集配置 - 极少量样本
-data = dict(
-    samples_per_gpu=1,
-    workers_per_gpu=0,  # 单进程加载
-    train=dict(
-        type='B2DOrionDataset',
-        data_root=data_root,
-        ann_file=ann_file_train,
-        limit_samples=8,  # ⚠️ 只加载5个训练样本
-        pipeline=train_pipeline,
-        classes=['car', 'van', 'truck', 'bicycle', 'traffic_sign', 'traffic_cone', 'traffic_light', 'pedestrian', 'others'],
-        modality=dict(use_lidar=False, use_camera=True, use_radar=False, use_map=False, use_external=True),
-        test_mode=False,
-        box_type_3d='LiDAR',
-        seq_mode=False,  # 关闭序列模式，避免小数据集分组报错
-        name_mapping=NameMapping,
-        map_root=map_root,
-        map_file=map_file,
-        queue_length=queue_length,
-        past_frames=past_frames,
-        future_frames=future_frames,
-        point_cloud_range=point_cloud_range,
-        polyline_points_num=map_fixed_ptsnum_per_gt_line,
-    ),
-    val=dict(
-        type='B2DOrionDataset',
-        data_root=data_root,
-        ann_file=ann_file_val,
-        limit_samples=5,  # ⚠️ 只加载5个验证样本（避免数据集为空）
-        pipeline=test_pipeline,
-        classes=['car', 'van', 'truck', 'bicycle', 'traffic_sign', 'traffic_cone', 'traffic_light', 'pedestrian', 'others'],
-        modality=dict(use_lidar=False, use_camera=True, use_radar=False, use_map=False, use_external=True),
-        test_mode=True,
-        box_type_3d='LiDAR',
-        seq_mode=False,
-        name_mapping=NameMapping,
-        map_root=map_root,
-        map_file=map_file,
-        queue_length=queue_length,
-        past_frames=past_frames,
-        future_frames=future_frames,
-        point_cloud_range=point_cloud_range,
-        polyline_points_num=map_fixed_ptsnum_per_gt_line,
-        eval_cfg=eval_cfg,
-    ),
-    # 采样器配置（IterBasedRunner 推荐使用“无限”批采样器，避免小样本触发 StopIteration）
-    # 训练：使用 InfiniteGroupEachSampleInBatchSampler（与 IterBasedRunner 配合）
-    # 验证：使用常规 DistributedSampler
-    shuffler_sampler=dict(
-        type='InfiniteGroupEachSampleInBatchSampler',
-        seq_split_num=1,
-        warmup_split_num=0,
-        num_iters_to_seq=3  # 与 total_iters 保持一致：num_iters_per_epoch(3) * num_epochs(1)
-    ),
-    nonshuffler_sampler=dict(type='DistributedSampler', shuffle=False)
-)
 
 # 模型配置
 model = dict(
@@ -649,7 +471,7 @@ model = dict(
     # 🔥 关键修改：禁用LLM加载（防止内存溢出死机）
     # LLM模型权重10-20GB，加载时会瞬间占用大量内存
     # 对于流程测试，可以先不加载LLM
-    tokenizer=None,  # 原值：llm_path
+    tokenizer=llm_path,  # 原值：llm_path
     lm_head=None,    # 原值：llm_path
     use_gen_token=False,  # 确保为False
     use_diff_decoder=False,
@@ -818,6 +640,218 @@ model = dict(
                 pc_range=point_cloud_range))),
     
     freeze_backbone=True  # 冻结backbone
+)
+
+
+# 数据配置
+dataset_type = 'B2DOrionDataset'
+data_root = 'data/bench2drive'
+info_root = 'data/infos'
+map_root = 'data/bench2drive/maps'
+map_file = 'data/infos/b2d_map_infos.pkl'
+
+file_client_args = dict(backend="disk")
+ann_file_train = 'data/infos/b2d_infos_train.pkl'
+ann_file_val = 'data/infos/b2d_infos_val.pkl'
+
+# Pipeline 配置
+train_pipeline = [
+    dict(type='LoadMultiViewImageFromFilesInCeph', to_float32=True),
+    dict(type='PhotoMetricDistortionMultiViewImage'),
+    dict(
+        type='LoadAnnotations3D',
+        with_bbox_3d=True,
+        with_label_3d=True,
+        with_attr_label=True,
+        with_light_state=True),
+    dict(
+        type='VADObjectRangeFilter',
+        point_cloud_range=point_cloud_range),
+    dict(
+        type='VADObjectNameFilter',
+        classes=['car', 'van', 'truck', 'bicycle', 'traffic_sign', 'traffic_cone',
+                'traffic_light', 'pedestrian', 'others']),
+    # 🔥 暂时注释掉VQA加载（需要tokenizer）   TODO
+    # dict(
+    #     type='LoadAnnoatationVQA',
+    #     base_desc_path='./data/chat-B2D/train',
+    #     tokenizer=llm_path,
+    #     max_length=2048,
+    #     use_gen_token=use_gen_token,
+    #     pretrain=pretrain),
+    dict(
+        type='ResizeCropFlipRotImage',
+        data_aug_conf=ida_aug_conf,
+        training=True),
+    dict(
+        type='ResizeMultiview3D',
+        img_scale=(640, 640),
+        keep_ratio=False,
+        multiscale_mode='value'),
+    dict(type='PadMultiViewImage', size_divisor=32),
+    dict(
+        type='NormalizeMultiviewImage',
+        mean=[123.675, 116.28, 103.53],
+        std=[58.395, 57.12, 57.375],
+        to_rgb=True),
+    dict(
+        type='PETRFormatBundle3D',
+        class_names=['car', 'van', 'truck', 'bicycle', 'traffic_sign', 'traffic_cone',
+                    'traffic_light', 'pedestrian', 'others'],
+        collect_keys=collect_keys),
+    dict(
+        type='CustomCollect3D',
+        keys=[
+            'gt_bboxes_3d', 'gt_labels_3d', 'img', 'ego_his_trajs',
+            # 'input_ids', 'vlm_labels',  # VQA相关，已移除
+            'gt_attr_labels', 'ego_fut_trajs', 'ego_fut_masks',
+            'ego_fut_cmd', 'ego_lcf_feat', 'can_bus',
+            'traffic_state_mask', 'traffic_state', 'lidar2img',
+            'cam_intrinsic', 'timestamp', 'ego_pose', 'ego_pose_inv', 'command'
+        ])
+]
+
+test_pipeline = [
+    dict(type='LoadMultiViewImageFromFilesInCeph', to_float32=True),
+    dict(
+        type='LoadAnnotations3D',
+        with_bbox_3d=True,
+        with_label_3d=True,
+        with_attr_label=True),
+    dict(
+        type='VADObjectRangeFilter',
+        point_cloud_range=point_cloud_range),
+    dict(
+        type='VADObjectNameFilter',
+        classes=['car', 'van', 'truck', 'bicycle', 'traffic_sign', 'traffic_cone',
+                'traffic_light', 'pedestrian', 'others']),
+    dict(
+        type='ResizeCropFlipRotImage',
+        data_aug_conf=ida_aug_conf,
+        training=False),
+    dict(
+        type='ResizeMultiview3D',
+        img_scale=(640, 640),
+        keep_ratio=False,
+        multiscale_mode='value'),
+    dict(
+        type='NormalizeMultiviewImage',
+        mean=[123.675, 116.28, 103.53],
+        std=[58.395, 57.12, 57.375],
+        to_rgb=True),
+    dict(type='PadMultiViewImage', size_divisor=32),
+    # 🔥 暂时注释掉VQA加载（需要tokenizer）
+    # dict(
+    #     type='LoadAnnoatationCriticalVQATest',
+    #     load_type=['critical_qa'],
+    #     tokenizer=llm_path,
+    #     use_gen_token=use_gen_token,
+    #     max_length=2048),
+    dict(
+        type='MultiScaleFlipAug3D',
+        img_scale=(1333, 800),
+        pts_scale_ratio=1,
+        flip=False,
+        transforms=[
+            dict(
+                type='PETRFormatBundle3D',
+                collect_keys=collect_keys,
+                class_names=['car', 'van', 'truck', 'bicycle', 'traffic_sign',
+                            'traffic_cone', 'traffic_light', 'pedestrian', 'others'],
+                with_label=False),
+            dict(
+                type='CustomCollect3D',
+                keys=[
+                    'gt_bboxes_3d', 'gt_labels_3d', 'img', 'ego_his_trajs',
+                    # 'input_ids', 'vlm_labels',  # VQA相关，已移除
+                    'gt_attr_labels', 'ego_fut_trajs',
+                    'ego_fut_masks', 'ego_fut_cmd', 'ego_lcf_feat',
+                    'can_bus', 'fut_valid_flag', 'lidar2img',
+                    'cam_intrinsic', 'timestamp', 'ego_pose', 'ego_pose_inv', 'command'
+                ])
+        ])
+]
+inference_only_pipeline = [
+    dict(type='LoadMultiViewImageFromFilesInCeph', to_float32=True,
+            file_client_args=file_client_args, img_root=data_root),
+    dict(type="NormalizeMultiviewImage", **img_norm_cfg),
+    dict(type="PadMultiViewImage", size_divisor=32),
+    dict(
+        type="MultiScaleFlipAug3D",
+        img_scale=(1600, 900),
+        pts_scale_ratio=1,
+        flip=False,
+        transforms=[
+            dict(
+                type="DefaultFormatBundle3D", class_names=class_names, with_label=False
+            ),
+            dict(
+                type="CustomCollect3D", keys=[
+                                            "img",
+                                            "timestamp",
+                                            "l2g_r_mat",
+                                            "l2g_t",
+                                            "command",
+                                        ]
+            ),
+        ],
+    ),
+]
+# 🔥 数据集配置 - 极少量样本
+data = dict(
+    samples_per_gpu=1,
+    workers_per_gpu=0,  # 单进程加载
+    train=dict(
+        type='B2DOrionDataset',
+        data_root=data_root,
+        ann_file=ann_file_train,
+        limit_samples=8,  # ⚠️ 只加载5个训练样本
+        pipeline=train_pipeline,
+        classes=['car', 'van', 'truck', 'bicycle', 'traffic_sign', 'traffic_cone', 'traffic_light', 'pedestrian', 'others'],
+        modality=dict(use_lidar=False, use_camera=True, use_radar=False, use_map=False, use_external=True),
+        test_mode=False,
+        box_type_3d='LiDAR',
+        seq_mode=False,  # 关闭序列模式，避免小数据集分组报错
+        name_mapping=NameMapping,
+        map_root=map_root,
+        map_file=map_file,
+        queue_length=queue_length,
+        past_frames=past_frames,
+        future_frames=future_frames,
+        point_cloud_range=point_cloud_range,
+        polyline_points_num=map_fixed_ptsnum_per_gt_line,
+    ),
+    val=dict(
+        type='B2DOrionDataset',
+        data_root=data_root,
+        ann_file=ann_file_val,
+        limit_samples=6,  # ⚠️ 只加载5个验证样本（避免数据集为空）
+        pipeline=test_pipeline,
+        classes=['car', 'van', 'truck', 'bicycle', 'traffic_sign', 'traffic_cone', 'traffic_light', 'pedestrian', 'others'],
+        modality=dict(use_lidar=False, use_camera=True, use_radar=False, use_map=False, use_external=True),
+        test_mode=True,
+        box_type_3d='LiDAR',
+        seq_mode=False,
+        name_mapping=NameMapping,
+        map_root=map_root,
+        map_file=map_file,
+        queue_length=queue_length,
+        past_frames=past_frames,
+        future_frames=future_frames,
+        point_cloud_range=point_cloud_range,
+        polyline_points_num=map_fixed_ptsnum_per_gt_line,
+        eval_cfg=eval_cfg,
+    ),
+    # 采样器配置（IterBasedRunner 推荐使用“无限”批采样器，避免小样本触发 StopIteration）
+    # 训练：使用 InfiniteGroupEachSampleInBatchSampler（与 IterBasedRunner 配合）
+    # 验证：使用常规 DistributedSampler
+    shuffler_sampler=dict(
+        type='InfiniteGroupEachSampleInBatchSampler',
+        seq_split_num=1,
+        warmup_split_num=0,
+        num_iters_to_seq=3  # 与 total_iters 保持一致：num_iters_per_epoch(3) * num_epochs(1)
+    ),
+    nonshuffler_sampler=dict(type='DistributedSampler', shuffle=False)
 )
 
 # 训练配置

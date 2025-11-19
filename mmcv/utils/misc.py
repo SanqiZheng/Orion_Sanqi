@@ -411,11 +411,19 @@ def locations(features, stride, pad_h, pad_w):
         return locations
     
 def load_model(base_model, use_lora, frozen, lm_kwargs=dict(), fp16_infer=False):
+    """
+    
+    加载并配置语言模型 (LLaMA)   TODO 学习 LLaVA-Llama因果语言模型) 是什么？
+    """
+
+
     if fp16_infer:
+        print("zhangxin load_model fp16_infer")
         model = LlavaLlamaForCausalLM.from_pretrained(base_model, torch_dtype=torch.float16, device_map='cpu', **lm_kwargs)
         # use_lora = False
         frozen = True
     else:
+        print("zhangxin load_model fp32")
         model = LlavaLlamaForCausalLM.from_pretrained(base_model, torch_dtype=torch.float32, device_map='cpu', **lm_kwargs)
     
     model.gradient_checkpointing_enable()

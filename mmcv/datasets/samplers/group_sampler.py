@@ -18,6 +18,10 @@ import itertools
 import math
 
 
+# 从数据集中选取样本组件，决定数据加载的顺序和方式， 随机采样 或 按照一定规则分组采样
+
+
+# 基础分组采样
 class GroupSampler(Sampler):
 
     def __init__(self, dataset, samples_per_gpu=1):
@@ -58,6 +62,7 @@ class GroupSampler(Sampler):
     def __len__(self):
         return self.num_samples
 
+# 分布式分组采样
 @SAMPLER.register_module()
 class DistributedGroupSampler(Sampler):
     """Sampler that restricts data loading to a subset of the dataset.
@@ -189,6 +194,8 @@ def sync_random_seed(seed=None, device='cuda'):
     dist.broadcast(random_num, src=0)
     return random_num.item()
 
+# 无限 分组 批次中的每个样本 分组器
+# 确保批次中的每个样本都来自不同的组，并且每个组的样本顺序是随机的。
 @SAMPLER.register_module()
 class InfiniteGroupEachSampleInBatchSampler(Sampler):
     """
@@ -269,7 +276,9 @@ class InfiniteGroupEachSampleInBatchSampler(Sampler):
 
     def _infinite_group_indices(self):
         g = torch.Generator()
-        g.manual_seed(self.seed)
+        g.manual_seed(self.seed)            # # 种子， 随机数生成器的“初始状态”。 使用相同种子，每次运行程序时会生成相同的随机数序列
+        # yield from 将一个生成其
+        # torch.randperm 生成一个长度为 self.groups_num， 使用指定随机生成器g 的随机排列
         while True:
             yield from torch.randperm(self.groups_num, generator=g).tolist()
 

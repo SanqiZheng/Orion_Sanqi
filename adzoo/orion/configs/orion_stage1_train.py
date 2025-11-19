@@ -152,6 +152,7 @@ predict_steps = 12
 predict_modes = 6
 use_nonlinear_optimizer = True
 use_memory = True
+
 num_gpus = 32
 batch_size = 4
 num_iters_per_epoch = 234769 // (num_gpus * batch_size)

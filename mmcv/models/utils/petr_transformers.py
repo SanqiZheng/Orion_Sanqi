@@ -18,7 +18,15 @@ from .attention import FlashMHA
 import warnings
 from mmcv.utils import force_fp32, auto_fp16
 
+# ========================================================
+# 决策规划工程师需重点关注的核心代码块已标注，主要包括：
+# 1. PETR基础组件结构 - 了解感知输出的生成过程
+# 2. 时序特性相关代码 - 对决策规划非常重要
+# 3. 输入输出接口定义 - 了解如何与感知模块交互
+# =======================================================
 
+
+# 基础注意力机制包装器 - 决策规划工程师简要了解即可
 class MultiheadAttentionWrapper(nn.MultiheadAttention):
     def __init__(self, *args, **kwargs):
         super(MultiheadAttentionWrapper, self).__init__(*args, **kwargs)
@@ -38,6 +46,7 @@ class MultiheadAttentionWrapper(nn.MultiheadAttention):
         # else:
         #     return self.forward_fp32( *args, **kwargs)
 
+# 带dropout的多头注意力机制 - 决策规划工程师简要了解即可
 class MultiHeadAttentionwDropout(nn.Module):
 
     def __init__(self, embed_dims, num_heads, dropout, flash_attn, fp16=False):
@@ -91,6 +100,7 @@ class MultiHeadAttentionwDropout(nn.Module):
 
         return out + query, attn
 
+# 前馈神经网络 - 决策规划工程师简要了解即可
 # Feed-forward Network
 class FFN(nn.Module):
 
@@ -116,6 +126,9 @@ class FFN(nn.Module):
 # 5. Feed-forward Network
 # 6. LayerNorm
 
+# ========================================================
+# 【决策规划工程师重点关注】PETR解码器层 - 了解感知特征如何被处理
+# ========================================================
 class PETRTransformerDecoderLayer(nn.Module):
 
     def __init__(self, 
@@ -160,29 +173,23 @@ class PETRTransformerDecoderLayer(nn.Module):
     # 解码器层内把当前 query 与拼接后的 temp_memory 做 self-attention，因此历史/当前查询在 transformer 内对话，
     # 随后再与多视角特征 cross-attention，达到“query-based 压缩 + 多视角融合” 
     def forward(self, query, key, query_pos, key_pos, attn_mask, temp_memory=None, temp_pos=None):
-        """ Forward function for transformer decoder layer
-        Args:
-            query: shape [num_query, batch_size, embed_dims]
-            key: shape [num_key, batch_size, embed_dims]
-            value: shape [num_value, batch_size, embed_dims]
-            query_pos: shape [num_query, batch_size, embed_dims]
-            key_pos: shape [num_key, batch_size, embed_dims]
-            attn_mask: shape [batch_size, num_query, num_key]
-        """
         # TODO: maybe we shouldn't use hard-code layer here
         # TODO: add temporal query here
         # 1. Multi-head Self-attention (between queries)
         if temp_memory is not None:
+            # 【决策规划工程师重点】时序信息融合 - 将当前帧与历史帧特征拼接
             temp_key = temp_value = torch.cat([query, temp_memory], dim=1)
             temp_pos = torch.cat([query_pos, temp_pos], dim=1)
         else:
             temp_key = temp_value = query
             temp_pos = query_pos
 
+        # temp_key 和 temp_value 是拼接后的历史帧特征，temp_pos 是历史帧的位置编码， 均来自 query本身，因此属于自注意力机制
         query, attn0 = self.transformer_layers[0](query, temp_key, temp_value, query_pos, temp_pos, attn_mask=attn_mask)
         # 2. LayerNorm
         query = self.transformer_layers[1](query)
         # 3. Multi-head Cross-attention (between queries and keys)
+        # key 和 value 来自编码器特征，query 来自当前帧特征，因此属于交叉注意力机制
         query, attn1 = self.transformer_layers[2](query, key, key, query_pos, key_pos, attn_mask=None)
         # 4. LayerNorm
         query = self.transformer_layers[3](query)
@@ -194,6 +201,9 @@ class PETRTransformerDecoderLayer(nn.Module):
         return query
 
 @TRANSFORMER.register_module()
+# ========================================================
+# 【决策规划工程师重点关注】PETR解码器 - 了解感知输出的生成过程
+# ========================================================
 class PETRTransformerDecoder(nn.Module):
     def __init__(self, 
                  num_layers,
@@ -227,12 +237,16 @@ class PETRTransformerDecoder(nn.Module):
     def forward(self, query, key, query_pos=None, key_pos=None, attn_mask=None, temp_memory=None, temp_pos=None):
         """ Forward function for transformer decoder
         Args:
-            query: shape [num_query, batch_size, embed_dims]
-            key: shape [num_key, batch_size, embed_dims]
-            value: shape [num_value, batch_size, embed_dims]
-            query_pos: shape [num_query, batch_size, embed_dims]
-            key_pos: shape [num_key, batch_size, embed_dims]
-            attn_mask: shape [batch_size, num_query, num_key]
+            query: shape [num_query, batch_size, embed_dims]  # 查询向量 - 决策规划需关注输出的查询特征
+            key: shape [num_key, batch_size, embed_dims]      # 编码器特征
+            query_pos: shape [num_query, batch_size, embed_dims]  # 查询位置编码
+            key_pos: shape [num_key, batch_size, embed_dims]      # 编码器位置编码
+            attn_mask: shape [batch_size, num_query, num_key]     # 注意力掩码
+            temp_memory: 时序历史特征 - 决策规划需关注时序融合机制
+            temp_pos: 时序历史位置编码
+        
+        Returns:
+            stacked_returns: [num_layers, num_query, batch_size, embed_dims] - 多层解码器输出
         """
         return_val = []
         for layer in self._layers:
@@ -241,9 +255,13 @@ class PETRTransformerDecoder(nn.Module):
             else:
                 query = layer(query, key, query_pos, key_pos, attn_mask, temp_memory, temp_pos)
             return_val.append(query)
-        return torch.stack(return_val, dim=0)
+        return torch.stack(return_val, dim=0)  # 返回所有层的输出，决策规划模块通常使用最后一层
 
 @TRANSFORMER.register_module()
+# ========================================================
+# 【决策规划工程师重点关注】时序PETR变换器 - 关键的时序信息处理模块
+# 决策规划需要理解时间维度上的特征融合机制
+# ========================================================
 class PETRTemporalTransformer(nn.Module):
     def __init__(self, 
                  input_dimension,
@@ -266,6 +284,7 @@ class PETRTemporalTransformer(nn.Module):
         self.input_dimension = embed_dims
         self.output_dimension = output_dimension
 
+        # 使用PETR解码器处理时序信息
         self.query_decoder = PETRTransformerDecoder(
                                             num_layers=num_layers,
                                             embed_dims=embed_dims,
@@ -291,9 +310,16 @@ class PETRTemporalTransformer(nn.Module):
     def forward(self, query, key, query_pos=None, key_pos=None, attn_mask=None, temp_memory=None, temp_pos=None):
         """ Forward function for transformer decoder
         Args:
-            vision_tokens: shape [bs, sequence_length, embed_dims]
+            query: 形状[num_query, batch_size, embed_dims] - 查询向量
+            key: 形状[num_key, batch_size, embed_dims] - 视觉特征
+            query_pos: 查询位置编码
+            key_pos: 视觉特征位置编码
+            temp_memory: 历史帧特征 - 对决策规划的时序预测至关重要
+            temp_pos: 历史帧位置编码
+        
         Output:
-            re-sampled token sequences: [bs, num_queries, embed_dims]
+            out: [num_layers, num_queries, batch_size, embed_dims] - 时序融合后的特征表示
+                 决策规划模块通常使用最后一层输出进行预测
         """
 
         out = self.query_decoder(query, key, query_pos, key_pos, attn_mask, temp_memory, temp_pos) # feature from the last layer
@@ -301,6 +327,9 @@ class PETRTemporalTransformer(nn.Module):
         return out
 
 
+# ========================================================
+# 【决策规划工程师了解即可】Orion简化版解码器层 - Orion论文中的特定实现
+# ========================================================
 class OrionTransformerDecoderLayer(nn.Module):
 
     def __init__(self, 
@@ -317,7 +346,7 @@ class OrionTransformerDecoderLayer(nn.Module):
         self._feedforward_dims = feedforward_dims
 
         self.transformer_layers = nn.ModuleList()
-        # # 1. Multi-head Self-attention
+        # # 1. Multi-head Self-attention - 注意：Orion简化版去掉了自注意力
         # self.transformer_layers.append(
         #     MultiHeadAttentionwDropout(embed_dims, num_heads, dropout, False, fp16)
         # )
@@ -352,12 +381,7 @@ class OrionTransformerDecoderLayer(nn.Module):
             key_pos: shape [num_key, batch_size, embed_dims]
             attn_mask: shape [batch_size, num_query, num_key]
         """
-        # 1. Multi-head Self-attention (between queries)
-        # temp_key = temp_value = query
-        # temp_pos = query_pos
-        # query, attn0 = self.transformer_layers[0](query, temp_key, temp_value, query_pos, temp_pos, attn_mask=attn_mask)
-        # # 2. LayerNorm
-        # query = self.transformer_layers[1](query)
+        # 注意：Orion简化版去掉了自注意力机制
         # 3. Multi-head Cross-attention (between queries and keys)
         query, attn1 = self.transformer_layers[0](query, key, key, query_pos, key_pos, attn_mask=None)
         # 4. LayerNorm
@@ -370,6 +394,9 @@ class OrionTransformerDecoderLayer(nn.Module):
         return query
 
 @TRANSFORMER.register_module()
+# ========================================================
+# 【决策规划工程师了解即可】Orion简化版解码器 - Orion论文中的特定实现
+# ========================================================
 class OrionTransformerDecoder(nn.Module):
     def __init__(self, 
                  num_layers,
@@ -407,10 +434,12 @@ class OrionTransformerDecoder(nn.Module):
         Args:
             query: shape [num_query, batch_size, embed_dims]
             key: shape [num_key, batch_size, embed_dims]
-            value: shape [num_value, batch_size, embed_dims]
             query_pos: shape [num_query, batch_size, embed_dims]
             key_pos: shape [num_key, batch_size, embed_dims]
             attn_mask: shape [batch_size, num_query, num_key]
+        
+        Returns:
+            query: 最后一层的输出特征 [num_query, batch_size, embed_dims]
         """
         return_val = []
         for layer in self._layers:
@@ -423,4 +452,4 @@ class OrionTransformerDecoder(nn.Module):
         if self.return_intermediate:
             torch.stack(return_val, dim=0)
         else:
-            return query
+            return query  # 返回最后一层的输出，与标准PETR不同之处

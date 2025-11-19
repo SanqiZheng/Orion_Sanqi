@@ -329,18 +329,65 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
 AutoConfig.register("llava_llama", LlavaConfig)
 AutoModelForCausalLM.register(LlavaConfig, LlavaLlamaForCausalLM)
 
+
+
+"""
+# 假设我们有以下tokenizer和model
+# tokenizer = 某个LLaMA分词器
+# model = 某个LLaMA模型
+
+# 定义要添加的特殊token列表
+special_tokens = ["<|image|>", "<|endofimage|>"]
+
+# 调用函数添加token
+add_special_token(special_tokens, tokenizer, model)
+
+
+分词器现在能识别 <|image|> 和 <|endofimage|> 这两个token了
+模型的嵌入层大小增加了2
+这两个新token的嵌入向量被初始化为原所有token嵌入向量的平均值
+这样模型就可以在处理多模态任务时，正确理解和处理这两个图像相关的特殊标记了。
+
+"""
+
+
+
+
+# 扩展语言模型的词汇表，向大语言模型的分词器中添加自定义的特殊token，并初始化这些token的嵌入向量。
 def add_special_token(special_token_list, tokenizer, model):
+    """
+    向分词器添加特殊token 并 初始化其对应的embedding
+    :param special_token_list: 特殊token列表
+    :param tokenizer: 分词器
+    :param model: 大模型
+    
+    :return: None   修改传入的 tokenizer 和 model 对象
+
+    功能： 
+    1. 向 tokenizer 添加新的特殊token
+    2. 调整模型的嵌入层大小以适应新的token数量
+    3. 初始化新添加的token的嵌入向量，使其与模型中其他token的嵌入向量的平均值接近
+    4. 打印新添加的token及其对应的索引
+    """
     # 给新的token添加索引并用大模型的embeding的平均值来初始化token的embeding
     num_new_tokens = tokenizer.add_tokens(special_token_list, special_tokens = True)
     model.resize_token_embeddings(len(tokenizer))
     if num_new_tokens > 0:
+        # 获取模型的输入embedding 和 输出 embedding
         input_embeddings = model.get_input_embeddings().weight.data
         output_embeddings = model.get_output_embeddings().weight.data
 
+        # A = list(1, 2, 3)
+        # : 表示切片操作  用于分割切片的开始和结束位置
+        # A[:-1]   从列表开头到倒数第一个元素之前的所有元素
+        # A[-1:]   从倒数第一个元素到列表末尾的所有元素
+
+        # 计算现有所有 token Embedding 的平均值
         input_embeddings_avg = input_embeddings[:-num_new_tokens].mean(
             dim=0, keepdim=True)
         output_embeddings_avg = output_embeddings[:-num_new_tokens].mean(
             dim=0, keepdim=True)
 
+        # 用原有 token Embedding 的平均值来初始化新添加的 token 的 Embedding
         input_embeddings[-num_new_tokens:] = input_embeddings_avg
         output_embeddings[-num_new_tokens:] = output_embeddings_avg

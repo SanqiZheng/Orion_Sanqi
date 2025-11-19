@@ -94,11 +94,22 @@ class B2DOrionDataset(Custom3DDataset):
             return 'traffic_cone'
         return name
 
+    # 标识数据集中样本的序列归属关系，
+    """
+    1. 遍历 data_infos，当 folder 变化就认为进入下一个“序列”，给该序列内的所有样本打同一个 flag（组号）。
+    2. 如果 seq_split_num != 1，把每个原序列按顺序切成 seq_split_num 个相邻的子序列，并把原来同一个 flag 的样本，重新分配到多个新的 flag 上。
+       小例子：原始两个序列长度分别为 4 和 3，对应 flag 为 [0,0,0,0,1,1,1]。若切 2 段，得到新 flag [0,0,1,1,2,2,3]（前4帧分成两组，每组2帧；后3帧分成[2帧|1帧]两组）。
+       这一步不直接“删数据”，它是把“组别边界”刻画清楚，供采样器使用（如 MMCV 的 GroupSampler/DistributedGroupSampler 会读取 dataset.flag，尽量保证同一 batch 来自同一组）。
+
+    TODO 
+    GroupSampler 的典型策略：先按 flag 分桶，每个桶内部独立打乱并按 batch 大小取整；这样每个 batch 都来自同一桶（同一子序列/序列段），避免“跨场景/跨长度混装”。
+    
+    """
     def _set_sequence_group_flag(self):
         """
-        Set each sequence to be a different group
+        Set each sequence to be a different group       将每个序列设置为不同的组
         """
-        res = []
+        res = []        # 存储每个样本所属的序列索引 (组号标志)
 
         curr_sequence = 0
         curr_scene_token = self.data_infos[0]['folder']
@@ -112,23 +123,32 @@ class B2DOrionDataset(Custom3DDataset):
 
         self.flag = np.array(res, dtype=np.int64)
 
-        if self.seq_split_num != 1:
+        # 原始flag: [0 0 0 0 1 1 1]
+        # 分割后的flag: [0, 0, 1, 1, 2, 2, 3]
+        if self.seq_split_num != 1:         # 将每个序列划分为多个子序列
             if self.seq_split_num == 'all':
                 self.flag = np.array(range(len(self.data_infos)), dtype=np.int64)
             else:
-                bin_counts = np.bincount(self.flag)
+                bin_counts = np.bincount(self.flag)     # 每个原始序列的样本数量  np.bincount 输出数组中每个数字的出现次数
                 new_flags = []
                 curr_new_flag = 0
                 for curr_flag in range(len(bin_counts)):
+                    # math.ceil 向上取整  计算当前序列（长度为bin_counts[curr_flag]）在分割成self.seq_split_num个子序列时，每个子序列的长度
+                    # 向上取整确保所有元素被分配
+                    # range（0, bin_counts[curr_flag]）， 步长为 math.ceil(bin_counts[curr_flag] / self.seq_split_num)
+                    # + [bin_counts[curr_flag]])  确保最后一个子序列的结束位置是原始序列的结束位置
+                    # list(range(0, bin_counts[curr_flag], math.ceil(bin_counts[curr_flag] / self.seq_split_num)))   每个序列分段的起点
+                    # curr_sequence_length 添加序列末尾点，形成完整的分割区间
                     curr_sequence_length = np.array(
                         list(range(0, 
                                 bin_counts[curr_flag], 
-                                math.ceil(bin_counts[curr_flag] / self.seq_split_num)))
+                                math.ceil(bin_counts[curr_flag] / self.seq_split_num)))         
                         + [bin_counts[curr_flag]])
 
+                    # 遍历每个子序列的长度   curr_sequence_length[1:] - curr_sequence_length[:-1]
                     for sub_seq_idx in (curr_sequence_length[1:] - curr_sequence_length[:-1]):
                         for _ in range(sub_seq_idx):
-                            new_flags.append(curr_new_flag)
+                            new_flags.append(curr_new_flag)         # 添加 sub_seq_idx 次 curr_new_flag 到列表中
                         curr_new_flag += 1
 
                 assert len(new_flags) == len(self.flag)
