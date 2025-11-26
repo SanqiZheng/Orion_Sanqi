@@ -2,12 +2,10 @@ import torch
 import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
 
-writer = SummaryWriter('logs/')
-
 
 
 # 简单的 PE 函数   
-# 正弦和余弦函数是周期性的，允许神经网络轻松学习到位置之间的相对关系，而不仅仅是绝对位置
+# 正弦和余弦函数是周期性的，允许神经网络轻松学习到位置之间的相对关系，而仅仅是绝对位置
 """
 输入 x [....., D]  
    unsqueeze
@@ -133,6 +131,12 @@ class TemporalAlign(nn.Module):
         tgt = tgt.to('cuda')
         reference_points = reference_points.to('cuda')
         
+
+        # 创建 SummaryWriter 实例
+        writer = SummaryWriter('logs/')
+
+
+
         print(">>> 输入:")
         print("tgt:", tgt.shape)
         print("query_pos:", query_pos.shape)
@@ -147,7 +151,9 @@ class TemporalAlign(nn.Module):
         print("[1] temp_reference_point:", temp_reference_point.shape)
         # 可视化张量
         writer.add_histogram('temp_reference_point', temp_reference_point)
-        writer.add_graph(model, (query_pos, tgt, reference_points))
+        
+        # 移除这里的 add_graph 调用，避免嵌套跟踪
+        # writer.add_graph(model, (query_pos, tgt, reference_points))
 
 
         # 2. 对历史 ref_point 做 NeRF PE，并映射到 C 维
@@ -259,7 +265,18 @@ class TemporalAlign(nn.Module):
         print("rec_ego_pose:", rec_ego_pose.shape)
         print("=" * 60)
 
+        # 最后关闭writer
+        writer.close()
+
         return tgt, query_pos, reference_points, temp_memory, temp_pos, rec_ego_pose
+
+
+
+    def forward(self, query_pos, tgt, reference_points):
+        # 直接调用现有的 temporal_alignment 方法
+        return self.temporal_alignment(query_pos, tgt, reference_points)
+     
+
 
 
 if __name__ == "__main__":
@@ -282,5 +299,35 @@ if __name__ == "__main__":
     tgt = torch.randn(B, Nq, C, device='cuda')
     reference_points = torch.rand(B, Nq, 3, device='cuda')
 
-    # 跑一遍，看看全流程 shape
-    outputs = model.temporal_alignment(query_pos, tgt, reference_points)
+    # 在模型外部创建一个专用的 SummaryWriter 用于图形可视化
+    writer = SummaryWriter('logs/')
+    
+    # 尝试保存计算图（在运行模型前）
+    try:
+        # 创建一个干净的模型副本用于跟踪
+        trace_model = TemporalAlign(
+            B=B,
+            Nq=Nq,
+            M=M,
+            C=C,
+            n_control=n_control,
+            num_propagated=num_propagated,
+        )
+        writer.add_graph(trace_model, (query_pos, tgt, reference_points))
+        print("计算图已成功保存到 TensorBoard")
+    except Exception as e:
+        print(f"保存计算图时出错: {e}")
+    
+    # 运行模型
+    outputs = model(query_pos, tgt, reference_points)
+    
+    # 记录一些关键张量
+    writer.add_histogram('output_tgt', outputs[0])
+    writer.add_histogram('output_query_pos', outputs[1])
+    
+    # 关闭writer
+    writer.close()
+
+
+    print(model)
+    torch.onnx.export(TemporalAlign)
