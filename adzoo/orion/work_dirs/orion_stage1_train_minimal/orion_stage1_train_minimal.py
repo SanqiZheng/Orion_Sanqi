@@ -1,7 +1,7 @@
 point_cloud_range = [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
 class_names = [
-    'car', 'truck', 'trailer', 'bus', 'construction_vehicle', 'bicycle',
-    'motorcycle', 'pedestrian', 'traffic_cone', 'barrier'
+    'car', 'van', 'truck', 'bicycle', 'traffic_sign', 'traffic_cone',
+    'traffic_light', 'pedestrian', 'others'
 ]
 dataset_type = 'B2DOrionDataset'
 data_root = 'data/bench2drive'
@@ -698,7 +698,7 @@ data = dict(
             use_external=True),
         test_mode=True,
         box_type_3d='LiDAR',
-        limit_samples=5,
+        limit_samples=6,
         seq_mode=False,
         name_mapping=dict({
             'vehicle.bh.crossbike': 'bicycle',
@@ -1609,11 +1609,6 @@ collect_keys = [
 ]
 pretrain = True
 use_col_loss = False
-info_root = 'data/infos'
-map_root = 'data/bench2drive/maps'
-map_file = 'data/infos/b2d_map_infos.pkl'
-ann_file_train = 'data/infos/b2d_infos_train.pkl'
-ann_file_val = 'data/infos/b2d_infos_val.pkl'
 model = dict(
     type='Orion',
     save_path='./results_planning_only/',
@@ -1782,6 +1777,41 @@ model = dict(
                 iou_cost=dict(type='IoUCost', weight=0.0),
                 pc_range=[-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]))),
     freeze_backbone=True)
+info_root = 'data/infos'
+map_root = 'data/bench2drive/maps'
+map_file = 'data/infos/b2d_map_infos.pkl'
+ann_file_train = 'data/infos/b2d_infos_train.pkl'
+ann_file_val = 'data/infos/b2d_infos_val.pkl'
+inference_only_pipeline = [
+    dict(
+        type='LoadMultiViewImageFromFilesInCeph',
+        to_float32=True,
+        file_client_args=dict(backend='disk'),
+        img_root='data/bench2drive'),
+    dict(
+        type='NormalizeMultiviewImage',
+        mean=[123.675, 116.28, 103.53],
+        std=[58.395, 57.12, 57.375],
+        to_rgb=True),
+    dict(type='PadMultiViewImage', size_divisor=32),
+    dict(
+        type='MultiScaleFlipAug3D',
+        img_scale=(1600, 900),
+        pts_scale_ratio=1,
+        flip=False,
+        transforms=[
+            dict(
+                type='DefaultFormatBundle3D',
+                class_names=[
+                    'car', 'van', 'truck', 'bicycle', 'traffic_sign',
+                    'traffic_cone', 'traffic_light', 'pedestrian', 'others'
+                ],
+                with_label=False),
+            dict(
+                type='CustomCollect3D',
+                keys=['img', 'timestamp', 'l2g_r_mat', 'l2g_t', 'command'])
+        ])
+]
 optimizer = dict(
     constructor='LearningRateDecayOptimizerConstructor',
     type='AdamW',

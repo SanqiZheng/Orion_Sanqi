@@ -410,21 +410,79 @@ def locations(features, stride, pad_h, pad_w):
         
         return locations
     
-def load_model(base_model, use_lora, frozen, lm_kwargs=dict(), fp16_infer=False):
+def load_model(base_model, use_lora, frozen, lm_kwargs=dict(), fp16_infer=False, load_in_8bit=False, load_in_4bit=False):
+    """
+    加载并配置语言模型 (LLaVA-LLaMA)
+    
+    参数:
+        load_in_8bit: 使用8-bit量化（显存降低约50%）
+        load_in_4bit: 使用4-bit量化（显存降低约75%）
     """
     
-    加载并配置语言模型 (LLaMA)   TODO 学习 LLaVA-Llama因果语言模型) 是什么？
-    """
-
-
-    if fp16_infer:
-        print("zhangxin load_model fp16_infer")
-        model = LlavaLlamaForCausalLM.from_pretrained(base_model, torch_dtype=torch.float16, device_map='cpu', **lm_kwargs)
-        # use_lora = False
-        frozen = True
-    else:
-        print("zhangxin load_model fp32")
-        model = LlavaLlamaForCausalLM.from_pretrained(base_model, torch_dtype=torch.float32, device_map='cpu', **lm_kwargs)
+    # 🔥 量化配置优先级：4bit > 8bit > fp16 > fp32
+    if load_in_4bit:
+        print("🔥 使用4-bit量化加载LLM（显存占用约3-4GB）")
+        try:
+            from transformers import BitsAndBytesConfig
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4"
+            )
+            model = LlavaLlamaForCausalLM.from_pretrained(
+                base_model,
+                quantization_config=quantization_config,
+                device_map='auto',
+                low_cpu_mem_usage=True,
+                **lm_kwargs
+            )
+            frozen = True
+            use_lora = False  # 量化模型不支持LoRA
+            print("✅ 4-bit量化加载成功")
+        except ImportError:
+            print("⚠️  未安装bitsandbytes，回退到FP16")
+            load_in_4bit = False
+            fp16_infer = True
+    
+    elif load_in_8bit:
+        print("🔥 使用8-bit量化加载LLM（显存占用约7-8GB）")
+        try:
+            model = LlavaLlamaForCausalLM.from_pretrained(
+                base_model,
+                load_in_8bit=True,
+                device_map='auto',
+                low_cpu_mem_usage=True,
+                **lm_kwargs
+            )
+            frozen = True
+            use_lora = False  # 量化模型不支持LoRA
+            print("✅ 8-bit量化加载成功")
+        except ImportError:
+            print("⚠️  未安装bitsandbytes，回退到FP16")
+            load_in_8bit = False
+            fp16_infer = True
+    
+    if not load_in_4bit and not load_in_8bit:
+        if fp16_infer:
+            print("🔥 使用FP16加载LLM（显存占用约13-14GB）")
+            model = LlavaLlamaForCausalLM.from_pretrained(
+                base_model, 
+                torch_dtype=torch.float16, 
+                device_map='cpu',
+                low_cpu_mem_usage=True,
+                **lm_kwargs
+            )
+            frozen = True
+        else:
+            print("⚠️  使用FP32加载LLM（显存占用约26-28GB）")
+            model = LlavaLlamaForCausalLM.from_pretrained(
+                base_model, 
+                torch_dtype=torch.float32, 
+                device_map='cpu',
+                low_cpu_mem_usage=True,
+                **lm_kwargs
+            )
     
     model.gradient_checkpointing_enable()
 
@@ -447,6 +505,84 @@ def load_model(base_model, use_lora, frozen, lm_kwargs=dict(), fp16_infer=False)
             for param in filter(lambda p: p.requires_grad,model.parameters()):
                 param.data = param.data.to(torch.float32)  
     return model
+
+"""
+def load_model(
+    base_model,
+    use_lora,
+    frozen,
+    lm_kwargs=None,
+    fp16_infer=False,
+    enable_llm=True,
+):
+    
+    加载并配置语言模型 (LLaVA-LLaMA 因果语言模型).
+
+    参数：
+      - base_model: 预训练模型路径或名称
+      - use_lora: 是否在 LLM 上套 LoRA
+      - frozen: 是否冻结 LLM 参数
+      - lm_kwargs: 额外传给 from_pretrained 的参数
+      - fp16_infer: 是否以 fp16 精度加载
+      - enable_llm: 调试用开关，False 时完全不加载 LLM
+      
+    if lm_kwargs is None:
+        lm_kwargs = {}
+
+    # ① 调试模式：完全不加载 LLM，省内存
+    if not enable_llm:
+        print("load_model: LLM disabled (enable_llm=False), returning None.")
+        return None
+
+    # ② 正常加载 LLM
+    if fp16_infer:
+        print("zhangxin load_model fp16_infer")
+        model = LlavaLlamaForCausalLM.from_pretrained(
+            base_model,
+            torch_dtype=torch.float16,
+            device_map="cpu",   # 目前放 CPU，后面可以再优化
+            **lm_kwargs,
+        )
+        frozen = True  # 推理用 LLM 通常是冻结的
+    else:
+        print("zhangxin load_model fp32")
+        model = LlavaLlamaForCausalLM.from_pretrained(
+            base_model,
+            torch_dtype=torch.float32,
+            device_map="cpu",
+            **lm_kwargs,
+        )
+
+    # ③ 启用梯度检查点（只在训练需要，推理其实可以不开）
+    model.gradient_checkpointing_enable()
+
+    # ④ 冻结参数（不参与训练）
+    if frozen:
+        model.eval()
+        for p in model.parameters():
+            p.requires_grad = False
+
+    # ⑤ 如果需要 LoRA，就在 LLM 上套一层
+    if use_lora:
+        peft_config = LoraConfig(
+            r=16,
+            lora_alpha=16,
+            target_modules=("q_proj", "k_proj", "v_proj", "o_proj"),
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+        model = get_peft_model(model, peft_config)
+
+        if not fp16_infer:
+            # 训练 LoRA 权重一般用 fp32 更稳
+            for param in filter(lambda p: p.requires_grad, model.parameters()):
+                param.data = param.data.to(torch.float32)
+
+    return model
+
+"""
+
 
 class MLN(nn.Module):
     ''' 

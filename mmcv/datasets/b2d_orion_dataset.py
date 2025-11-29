@@ -900,7 +900,8 @@ class B2DOrionDataset(Custom3DDataset):
         metric_dict = None
         num_valid = 0
         for res in results:
-            if res['metric_results']['fut_valid_flag']:
+            # 🔥 修复：安全访问 fut_valid_flag，如果不存在则跳过规划评估
+            if res.get('metric_results', {}).get('fut_valid_flag', False):
                 num_valid += 1
             else:
                 continue
@@ -910,9 +911,13 @@ class B2DOrionDataset(Custom3DDataset):
                 for k in res['metric_results'].keys():
                     metric_dict[k] += res['metric_results'][k]
         
-        for k in metric_dict:
-            metric_dict[k] = metric_dict[k] / num_valid
-            print("{}:{}".format(k, metric_dict[k]))
+        # 🔥 修复：如果没有有效样本，跳过规划指标打印
+        if metric_dict is not None and num_valid > 0:
+            for k in metric_dict:
+                metric_dict[k] = metric_dict[k] / num_valid
+                print("{}:{}".format(k, metric_dict[k]))
+        else:
+            print("⚠️  无有效规划样本（可能是推理模式或数据不包含规划标注）")
 
         if isinstance(result_files, dict):
             results_dict = dict()

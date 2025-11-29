@@ -471,7 +471,7 @@ model = dict(
     # 🔥 关键修改：禁用LLM加载（防止内存溢出死机）
     # LLM模型权重10-20GB，加载时会瞬间占用大量内存
     # 对于流程测试，可以先不加载LLM
-    tokenizer=llm_path,  # 原值：llm_path
+    tokenizer=None,  # 原值：llm_path
     lm_head=None,    # 原值：llm_path
     use_gen_token=False,  # 确保为False
     use_diff_decoder=False,
@@ -805,7 +805,7 @@ data = dict(
         type='B2DOrionDataset',
         data_root=data_root,
         ann_file=ann_file_train,
-        limit_samples=8,  # ⚠️ 只加载5个训练样本
+        limit_samples=8,  # ⚠️ 只加载8个训练样本
         pipeline=train_pipeline,
         classes=['car', 'van', 'truck', 'bicycle', 'traffic_sign', 'traffic_cone', 'traffic_light', 'pedestrian', 'others'],
         modality=dict(use_lidar=False, use_camera=True, use_radar=False, use_map=False, use_external=True),
@@ -825,7 +825,7 @@ data = dict(
         type='B2DOrionDataset',
         data_root=data_root,
         ann_file=ann_file_val,
-        limit_samples=6,  # ⚠️ 只加载5个验证样本（避免数据集为空）
+        limit_samples=6,  # ⚠️ 只加载6个验证样本
         pipeline=test_pipeline,
         classes=['car', 'van', 'truck', 'bicycle', 'traffic_sign', 'traffic_cone', 'traffic_light', 'pedestrian', 'others'],
         modality=dict(use_lidar=False, use_camera=True, use_radar=False, use_map=False, use_external=True),
@@ -842,9 +842,31 @@ data = dict(
         polyline_points_num=map_fixed_ptsnum_per_gt_line,
         eval_cfg=eval_cfg,
     ),
-    # 采样器配置（IterBasedRunner 推荐使用“无限”批采样器，避免小样本触发 StopIteration）
+    # 🔥 添加test配置（用于推理）
+    test=dict(
+        type='B2DOrionDataset',
+        data_root=data_root,
+        ann_file=ann_file_val,  # 使用验证集数据
+        limit_samples=6,  # ⚠️ 只加载6个测试样本
+        pipeline=test_pipeline,
+        classes=['car', 'van', 'truck', 'bicycle', 'traffic_sign', 'traffic_cone', 'traffic_light', 'pedestrian', 'others'],
+        modality=dict(use_lidar=False, use_camera=True, use_radar=False, use_map=False, use_external=True),
+        test_mode=True,
+        box_type_3d='LiDAR',
+        seq_mode=False,
+        name_mapping=NameMapping,
+        map_root=map_root,
+        map_file=map_file,
+        queue_length=queue_length,
+        past_frames=past_frames,
+        future_frames=future_frames,
+        point_cloud_range=point_cloud_range,
+        polyline_points_num=map_fixed_ptsnum_per_gt_line,
+        eval_cfg=eval_cfg,
+    ),
+    # 采样器配置（IterBasedRunner 推荐使用"无限"批采样器，避免小样本触发 StopIteration）
     # 训练：使用 InfiniteGroupEachSampleInBatchSampler（与 IterBasedRunner 配合）
-    # 验证：使用常规 DistributedSampler
+    # 验证/测试：使用常规 DistributedSampler
     shuffler_sampler=dict(
         type='InfiniteGroupEachSampleInBatchSampler',
         seq_split_num=1,

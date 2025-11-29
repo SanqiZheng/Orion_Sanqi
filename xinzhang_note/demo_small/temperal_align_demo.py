@@ -2,12 +2,12 @@ import torch
 import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
 
-writer = SummaryWriter('logs/')
-
 
 
 # 简单的 PE 函数   
 # 正弦和余弦函数是周期性的，允许神经网络轻松学习到位置之间的相对关系，而不仅仅是绝对位置
+# 把“坐标 x”变成一串不同频率的正弦 / 余弦信号，让后面的 MLP 能像做“小型傅里叶展开”一样，学到很细的空间 / 时间细节。
+# 正弦和余弦函数是周期性的，允许神经网络轻松学习到位置之间的相对关系，而仅仅是绝对位置
 """
 输入 x [....., D]  
    unsqueeze
@@ -21,6 +21,15 @@ pe [...., D, 2F]
    reshape
 输出 [....., D*2*F]
 """
+# 输入 x 本身就是坐标 (x, y, z)。
+"""
+将低维空间中的位置信息映射到高维空间，使神经网络更容易学习到位置之间的关系。具体体现：
+
+频率变换捕捉位置特征：通过将坐标值与不同频率（2的幂次）相乘，实现了对坐标的频率调制
+正交基函数展开：使用正弦和余弦函数作为正交基，这与傅里叶变换类似，能够将位置信息分解到不同频率分量上,
+             不同频率对应不同尺度的位置特征，既有全局特征又有局部细节
+位置相似性保持：在原始空间中相似的位置，在编码后空间中仍然保持相似的关系，但表达能力更强
+"""
 def nerf_positional_encoding(x, num_freqs = 4):
     """
     x: [...., D]
@@ -32,17 +41,26 @@ def nerf_positional_encoding(x, num_freqs = 4):
 
     # 在 device上创建长为 num_freqs 的整数序列作为 2 的指数
     # freqs = [1.0, 2.0, 4.0, 8.0, 16.0 ....]
-    freqs = 2 ** torch.arange(num_freqs, device=device).float()         # [F]
+    # freqs 是一维张量，形状为 [F]
+    # 创建一组不同频率的基函数，频率从低频到高频呈2的幂次增长
+    # 作用: 使编码能够同时捕捉不同尺度的位置信息，低频捕捉大尺度特征，高频捕捉细节特征
+    freqs = 2 ** torch.arange(num_freqs, device=device).float()     
     
-    # unsqueeze(-1) 在张量的最后一个维度后添加一个新的维度, 将形状为 [..., D] 的张量变为 [..., D, 1]
-    # pytorch 的广播机制，将 freqs会被自动扩展为[1, 1, ..., F]
-    x_expanded = x.unsqueeze(-1) * freqs        # [...., D, F]
+    # 结果为 [,,,,,D,F]
+    # 物理意义: 将每个位置坐标值与不同频率相乘，相当于在不同频率尺度上对位置进行调制
+    # 通过不同频率的基函数来表示同一个信号
+    # 调制: 用不同频率的正/余弦函数，给位置 pos 做"多尺度数值编码"， 高频函数画出"局部细节位置特征"
+    # 低频得到全局大尺度特征
+    x_expanded = x.unsqueeze(-1) * freqs        
 
-    # sin / cos -> [..., D, 2F]
+    # torch.sin(x_expanded) 对张量中的每个元素取 sin
     # 沿最后一个维度拼接两个形状为 [..., D, F] 的张量，结果为 [..., D, 2F]
+    # 最后一个维度的大小翻倍，变为 2F
+    # 把原始数值变成了波：[sin(0.1), sin(0.2)... cos(0.1), cos(0.2)...]。
     pe = torch.cat([torch.sin(x_expanded), torch.cos(x_expanded)], dim = -1)
 
     # 形状重塑为 [..., D * 2F], *origin_shape[:-1] 解包
+    # 将展开的多维特征重塑回与输入兼容的形状，只是位置维度被扩展了
     pe = pe.reshape(*origin_shape[:-1], D * 2 * num_freqs)
     return pe
 
@@ -103,12 +121,15 @@ class TemporalAlign(nn.Module):
         # 历史特征: [B, M, C] - 确保在CUDA上
         self.memory_embedding = torch.randn(B, M, C, device='cuda')
 
-        # 历史时间戳: [B, M, 1]  - 确保在CUDA上
+        # 历史时间戳: [B, M, 1]
+        # .view 不改变元素总数，改变张量维度， .repeat() 沿特定维度重复将原有数据复制特定次数
         ts = torch.linspace(0, 1, steps = M, device='cuda').view(1, M, 1)  # [1, M, 1]
-        self.memory_timestamp = ts.repeat(B, 1, 1)          # [B, 1, 1]
+        # 将第一个维度数据重复B次，第二个维度重复1次，第三个维度重复1次，结果是  [B, M, 1]
+        self.memory_timestamp = ts.repeat(B, 1, 1)          # [B, M, 1]
 
-        # 历史 ego pose: [B, M, 4, 4]  单位矩阵 - 确保在CUDA上
-        eye = torch.eye(4, device='cuda').view(1, 1, 4, 4)
+        # 历史 ego pose: [B, M, 4, 4]  单位矩阵
+        # .eye(n, m=None) 生成一个 nxm 形状的张量， m默认等于 n
+        eye = torch.eye(4, device='cuda').view(1, 1, 4, 4)          # 输出为 [1, 1, 4, 4] 的四维张量
         self.memory_egopose = eye.repeat(B, M, 1, 1)
 
         # 各种 embedding 层
@@ -133,6 +154,12 @@ class TemporalAlign(nn.Module):
         tgt = tgt.to('cuda')
         reference_points = reference_points.to('cuda')
         
+
+        # 创建 SummaryWriter 实例
+        writer = SummaryWriter('logs/')
+
+
+
         print(">>> 输入:")
         print("tgt:", tgt.shape)
         print("query_pos:", query_pos.shape)
@@ -147,7 +174,9 @@ class TemporalAlign(nn.Module):
         print("[1] temp_reference_point:", temp_reference_point.shape)
         # 可视化张量
         writer.add_histogram('temp_reference_point', temp_reference_point)
-        writer.add_graph(model, (query_pos, tgt, reference_points))
+        
+        # 移除这里的 add_graph 调用，避免嵌套跟踪
+        # writer.add_graph(model, (query_pos, tgt, reference_points))
 
 
         # 2. 对历史 ref_point 做 NeRF PE，并映射到 C 维
@@ -259,7 +288,18 @@ class TemporalAlign(nn.Module):
         print("rec_ego_pose:", rec_ego_pose.shape)
         print("=" * 60)
 
+        # 最后关闭writer
+        writer.close()
+
         return tgt, query_pos, reference_points, temp_memory, temp_pos, rec_ego_pose
+
+
+
+    def forward(self, query_pos, tgt, reference_points):
+        # 直接调用现有的 temporal_alignment 方法
+        return self.temporal_alignment(query_pos, tgt, reference_points)
+     
+
 
 
 if __name__ == "__main__":
@@ -268,19 +308,62 @@ if __name__ == "__main__":
     n_control = 3
     num_propagated = 2
 
-    model = TemporalAlign(
-        B=B,
-        Nq=Nq,
-        M=M,
-        C=C,
-        n_control=n_control,
-        num_propagated=num_propagated,
-    )
+
+    pc_range = torch.tensor([-100.0, -100.0, -10.0, 
+                                100.0, 100.0, 10.0], device='cuda')
+
+
+    print(pc_range)
+    print(pc_range[:-3])
+    # model = TemporalAlign(
+    #     B=B,
+    #     Nq=Nq,
+    #     M=M,
+    #     C=C,
+    #     n_control=n_control,
+    #     num_propagated=num_propagated,
+    # )
 
     # 当前帧的输入 - 创建在CUDA上
     query_pos = torch.randn(B, Nq, C, device='cuda')
     tgt = torch.randn(B, Nq, C, device='cuda')
     reference_points = torch.rand(B, Nq, 3, device='cuda')
 
+    # print(query_pos)
+    # print(tgt)
+    # print(reference_points)
+
     # 跑一遍，看看全流程 shape
-    outputs = model.temporal_alignment(query_pos, tgt, reference_points)
+    # outputs = model.temporal_alignment(query_pos, tgt, reference_points)
+    # 在模型外部创建一个专用的 SummaryWriter 用于图形可视化
+    writer = SummaryWriter('logs/')
+    
+    # 尝试保存计算图（在运行模型前）
+    try:
+        # 创建一个干净的模型副本用于跟踪
+        trace_model = TemporalAlign(
+            B=B,
+            Nq=Nq,
+            M=M,
+            C=C,
+            n_control=n_control,
+            num_propagated=num_propagated,
+        )
+        writer.add_graph(trace_model, (query_pos, tgt, reference_points))
+        print("计算图已成功保存到 TensorBoard")
+    except Exception as e:
+        print(f"保存计算图时出错: {e}")
+    
+    # 运行模型
+    outputs = model(query_pos, tgt, reference_points)
+    
+    # 记录一些关键张量
+    writer.add_histogram('output_tgt', outputs[0])
+    writer.add_histogram('output_query_pos', outputs[1])
+    
+    # 关闭writer
+    writer.close()
+
+
+    print(model)
+    torch.onnx.export(TemporalAlign)

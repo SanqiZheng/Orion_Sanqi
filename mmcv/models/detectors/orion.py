@@ -98,6 +98,8 @@ class Orion(MVXTwoStageDetector):
                  fp16_infer=False, # for faster close-loop infer, infer without evaluation
                  fp16_eval=False,
                  fp32_infer=False,  # for infer without evaluation
+                 load_in_8bit=False,  # 🔥 新增：8-bit量化LLM（显存~7-8GB）
+                 load_in_4bit=False,  # 🔥 新增：4-bit量化LLM（显存~3-4GB）
                  fut_ts=6,
                  freeze_backbone=False,
                  use_col_loss = False,
@@ -193,7 +195,7 @@ class Orion(MVXTwoStageDetector):
         self.qa_pretrain = qa_pretrain
         if lm_head is not None:
             lm_kwargs = dict(use_gen_token=use_gen_token,use_critical_qa=use_critical_qa)
-            self.lm_head = load_model(lm_head, use_lora, frozen, lm_kwargs, fp16_infer)
+            self.lm_head = load_model(lm_head, use_lora, frozen, lm_kwargs, fp16_infer, load_in_8bit, load_in_4bit)
         if use_gen_token:
             add_special_token([EGO_WAYPOINT_TOKEN], tokenizer = self.tokenizer, model = self.lm_head)
             self.lm_head.config.waypoint_token_idx = self.tokenizer(EGO_WAYPOINT_TOKEN, add_special_tokens=False).input_ids[0]

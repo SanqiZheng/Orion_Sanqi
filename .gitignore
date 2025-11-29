@@ -16,3 +16,6 @@ __pycache__/
 
 # 其他临时文件
 temp.py  # 如果你不需要跟踪temp.py的话
+
+
+~/.cursor/
