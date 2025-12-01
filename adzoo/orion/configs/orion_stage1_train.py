@@ -390,11 +390,13 @@ test_pipeline = [
     dict(type='ResizeMultiview3D', img_scale=(640, 640), keep_ratio=False, multiscale_mode='value'),
     dict(type="NormalizeMultiviewImage", **img_norm_cfg),
     dict(type="PadMultiViewImage", size_divisor=32),
+
+    # 生成视觉问答所需的数据
     dict(type='LoadAnnoatationCriticalVQATest', 
          load_type=["critical_qa"],
-         tokenizer=llm_path, 
-         use_gen_token=use_gen_token,
-         max_length=2048,),
+         tokenizer=llm_path,        
+         use_gen_token=use_gen_token,       # 是否使用生成token
+         max_length=2048,),                 # 最大序列长度
 
     dict(
         type='MultiScaleFlipAug3D',

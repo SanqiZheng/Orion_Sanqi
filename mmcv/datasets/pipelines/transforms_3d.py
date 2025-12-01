@@ -886,6 +886,7 @@ class LoadAnnoatationVQA():
             mix_qa_training=False,
             ):
         
+        # 初始化分词器
         self.tokenizer =  AutoTokenizer.from_pretrained(tokenizer,
                                             model_max_length=max_length,
                                             padding_side="right",
@@ -906,6 +907,8 @@ class LoadAnnoatationVQA():
         'singapore': 'left',
         'boston': 'right',
         }
+
+        # 设置问题模板
         self.template = [
                         "What can you tell about the current driving conditions from the images?",
                         "What can be observed in the panoramic images provided?",
@@ -1077,13 +1080,16 @@ class LoadAnnoatationVQA():
 
 # zhangxin TODO
 # 训练或推理时，LLM 在看到该模板后必须生成 <waypoint_ego>，对应隐藏状态即规划 token，后续模块无需解析文本。
+# 1. 生成用于VQA 提示和问题模板
+# 2. 预处理输入的问答数据，为语言模型提供输入_ids和vlm_labels 格式化输入
+# 3. 支持多种问答类型，包括场景描述、关键物体识别、驾驶行为解释和轨迹规划等
 @PIPELINES.register_module()
 class LoadAnnoatationCriticalVQATest():
     def __init__(
             self, 
-            tokenizer, 
-            max_length,
-            load_type=["conv", "planning", "counter"], 
+            tokenizer,      # 语言模型的tokenizer 文本分词器
+            max_length,     # 最大输入长度，超过该长度会被截断
+            load_type=["conv", "planning", "counter"],          # 加载的问答类型，包括conv（对话）、planning（规划）和counter（计数器）
             planning_qa_command=False,
             desc_qa=False,
             use_gen_token=False,
@@ -1096,6 +1102,7 @@ class LoadAnnoatationCriticalVQATest():
                                             )
         self.tokenizer.pad_token = self.tokenizer.unk_token
         self.load_type = load_type
+        # 场景描述问题模板
         self.template = [
                         "What can you tell about the current driving conditions from the images?",
                         "What can be observed in the panoramic images provided?",
@@ -1110,7 +1117,7 @@ class LoadAnnoatationCriticalVQATest():
                         "Can you describe the overall conditions and environment based on the images?",
                         "Could you describe the overall environment and objects captured in the images provided?"
                         ]
-
+        # 关键物体识别问题模板
         self.critical_object_template = [
                         "Where are the critical objects in the scene and what impact do they have on the ego vehicle?",
                         "Identify the significant objects in the scene and their specific impacts on the ego vehicle.",
@@ -1118,7 +1125,7 @@ class LoadAnnoatationCriticalVQATest():
                         "Which objects in the scene are critical, and what effects do they have on the ego vehicle's movement?",
                         "Please describe the critical objects in the scene, their positions, and the influence they have on the ego vehicle."
                         ]
-
+        # 驾驶指令模板
         self.command_template = [
                                 "The current driving instruction is to turn left.",
                                 "The current driving instruction is to turn right.",
@@ -1135,12 +1142,21 @@ class LoadAnnoatationCriticalVQATest():
                                 'The second question is: ',
                                 'The third question is: ',
                                 ]
-        
+    """
+    预处理输入的问答数据，为语言模型提供输入_ids和vlm_labels 格式化输入
+    1. 从模板中随机选择, 生成测试问题
+    2. 为每个问题添加空答案
+    3. 将问题和答案合并为sources 列表
+    4. 对sources 列表中的每个元素进行tokenize 编码，得到input_ids 和vlm_labels
+    5. 返回编码后的输入_ids 和vlm_labels
+    """  
     def preprocess_vqa(self, results):
         sources = []
-        question = str(random.choice(self.template))
+        question = str(random.choice(self.template))        # 从模板中随机选择一个问题
         critical_object_question = str(random.choice(self.critical_object_template))
+        # 根据 load_type 决定生成哪些类型的问题：
         if "critical_qa" in self.load_type:
+                # 生成场景描述、关键物体识别和驾驶行为解释三类问题
                 sources.append(
                     [
                         {"from": 'human',
@@ -1166,6 +1182,7 @@ class LoadAnnoatationCriticalVQATest():
                             ]
                     )
                 if self.merge_multiround_qa_into_one:
+                    # 将多轮问答合并为单轮问答
                     sources = []
                     sources.append(
                             [
@@ -1176,6 +1193,7 @@ class LoadAnnoatationCriticalVQATest():
                                 ]
                         )
         if "planning" in self.load_type: # planning trajs
+            # 生成轨迹规划问题
             sources.append(
                     [
                         {"from": 'human',
@@ -1188,13 +1206,21 @@ class LoadAnnoatationCriticalVQATest():
         
         return sources  
     
+    # __call__ 方法是Python中的一个特殊方法，它允许你像调用函数一样调用一个对象。
+    """
+    class MyClass:
+    def __call__(self, x):
+        return x + 1
 
+    obj = MyClass()
+    result = obj(5)  # 像调用函数一样调用对象，结果是6
+    """
     def __call__(self, results):
         sources = self.preprocess_vqa(results)
-        prompt = f"You are driving a car."
+        prompt = f"You are driving a car."              # 系统提示词
 
-        if self.use_gen_token:
-            if not self.desc_qa:
+        if self.use_gen_token:    #  使用特殊标记（如 <waypoint_ego> ）
+            if not self.desc_qa:   # 可能会清空sources并添加特定格式的轨迹规划问题
                 sources = []
             sources += [
                 [{"from": 'human',
@@ -1202,19 +1228,22 @@ class LoadAnnoatationCriticalVQATest():
                 {"from": 'gpt',
                 "value": "Here is the planning trajectory <waypoint_ego>"}]
             ]
-        vlm_labels = [anno[0]['value'] for anno in sources]
+        vlm_labels = [anno[0]['value'] for anno in sources]  # 提取所有问答对的答案部分
 
         if self.use_gen_token:
-            vqa_anno = [item for pair in sources for item in pair]
-            num_new_tokens = self.tokenizer.add_tokens(["<waypoint_ego>"], special_tokens = True)
-            vqa_anno[0]['value'] = DEFAULT_IMAGE_TOKEN + '\n' + prompt + vqa_anno[0]['value']
+            vqa_anno = [item for pair in sources for item in pair]                                      # 将所有问答对合并为一个列表
+            num_new_tokens = self.tokenizer.add_tokens(["<waypoint_ego>"], special_tokens = True)       # 添加特殊标记为特殊token
+            vqa_anno[0]['value'] = DEFAULT_IMAGE_TOKEN + '\n' + prompt + vqa_anno[0]['value']           # 为第一个问答对添加系统提示词
         else:
             vqa_anno = [item for pair in sources for item in pair]
             vqa_anno[0]['value'] = DEFAULT_IMAGE_TOKEN + '\n' + prompt + vqa_anno[0]['value']
         
+        # 使用 preprocess 函数将问答对转换为模型可处理的格式
         vqa_converted = preprocess(sources, self.tokenizer, has_image=True, training_mode=False, only_one_system_prompt = True)
         input_ids = vqa_converted['input_ids']
-
+        # 输出 ：向 results 字典添加两个关键键值对：
+        # - input_ids ：转换为数字索引的模型输入序列
+        # - vlm_labels ：视觉语言模型的标签（包含所有问题内容）
         results['input_ids'] = input_ids
         results['vlm_labels'] = vlm_labels
         

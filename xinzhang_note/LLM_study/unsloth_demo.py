@@ -1,6 +1,8 @@
 """
 unsloth 对LLM的算子和反向传播(计算梯度？)进行优化
 
+此文件目标：
+确认你机器上能顺利跑通 Llama 3.1 8B 4bit 的推理，不爆显存、不报错。
 """
 
 import imp
@@ -41,3 +43,5 @@ def chat(prompt: str, max_new_tokens: int = 128):
             )
     response = tokenizer.decode(outputs[0], skip_special_tokens=True)
     return response
+
+chat("请用通俗的方式解释一下什么是旋转位置编码 RoPE，并打个生活中的比方。")

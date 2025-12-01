@@ -256,7 +256,7 @@ class Orion(MVXTwoStageDetector):
                 # self.loss_plan_dir = build_loss(loss_plan_dir)
                 self.loss_vae_gen = build_loss(loss_vae_gen)
             
-            elif self.use_diff_decoder:
+            elif self.use_diff_decoder:     # 置 False
                 self.plan_cls_loss_smooth = plan_cls_loss_smooth
                 self.diff_loss_weight = diff_loss_weight
                 self.diff_traj_cls_loss_weight = 10.0
@@ -266,19 +266,66 @@ class Orion(MVXTwoStageDetector):
                 self.noise_y_offset = noise_y_offset
                 self.noise_y_scale = noise_y_scale
                 self.ego_fut_mode = ego_fut_mode
-                with open(plan_anchor_path, 'rb') as f:
-                    anchors = pickle.load(f)
-                plan_anchor = np.array(anchors) # (20,6,2)
-                assert self.ego_fut_mode == plan_anchor.shape[0]
-                self.plan_anchor = nn.Parameter(
-                    torch.tensor(plan_anchor, dtype=torch.float32),
-                    requires_grad=False,
-                ) # 20,6,2
 
+                # 如果提供了轨迹锚点路径，则加载预定义的轨迹锚点  
+                # zhangxin修改，原始代码中没有对 plan_anchor_path 为 None 的判断
+                if plan_anchor_path is not None:
+                    with open(plan_anchor_path, 'rb') as f:
+                        anchors = pickle.load(f)
+                    # 1. 预定义轨迹锚点（20种模式，每种6个姿态点，每个点2个坐标）
+                    plan_anchor = np.array(anchors) # (20,6,2)
+                    assert self.ego_fut_mode == plan_anchor.shape[0]
+                    # 使用nn.Parameter包装，变成模型可学习参数，requires_grad=False 表示不参与训练，设置为不可学习
+                    # 这确保了锚点在训练过程中保持固定，而不是被优化
+                    # 轨迹锚点被包装成nn.Parameter并设置requires_grad=False，这意味着：
+                    # - 它被正式注册为模型的一部分（可以随模型保存和加载）
+                    # - 但在训练过程中不会改变（保持固定的锚点模式）
+                    # - 这样模型可以围绕这些固定锚点生成多样化的轨迹预测
+                    self.plan_anchor = nn.Parameter(
+                        torch.tensor(plan_anchor, dtype=torch.float32),
+                        requires_grad=False,
+                    ) # 20,6,2
+                else:
+                    # 如果没有提供路径，使用随机初始化的锚点
+                    # 创建形状为(ego_fut_mode, 6, 2)的随机锚点
+                    # 注意：实际应用中可能需要根据需求调整初始化策略
+                    plan_anchor = torch.randn(self.ego_fut_mode, 6, 2)
+                    # 归一化到合适的范围
+                    plan_anchor = F.normalize(plan_anchor, dim=-1) * 5.0  # 假设5.0是合适的缩放因子
+                    self.plan_anchor = nn.Parameter(
+                        plan_anchor.to(dtype=torch.float32),
+                        requires_grad=False,
+                    )
+
+                # 2. 轨迹编码器，用于将轨迹位置编码转换为特征
+                # 轨迹编码器：将位置编码转换为高维特征
+                # linear_relu_ln(4096, 1, 1, 512*6) 构建：
+                # - 输入维度：512*6 = 3072（来自位置编码）
+                # - 输出维度：4096（隐藏层维度）
+                # - 结构：1个外层循环，1个内层循环
+                #   - 内层：Linear(3072→4096) + ReLU
+                #   - 外层：LayerNorm(4096)
+                # 最后再加一个Linear(4096→4096)层
                 self.plan_anchor_encoder = nn.Sequential(
-                    *linear_relu_ln(4096, 1, 1,512*6),
+                    *linear_relu_ln(4096, 1, 1, 512*6),         
                     nn.Linear(4096, 4096),
                 )
+                """
+                展开后相当于：
+                self.plan_anchor_encoder = nn.Sequential(
+                    # linear_relu_ln(4096, 1, 1, 3072) 的展开
+                    nn.Linear(3072, 4096),  # 输入层：位置编码(3072维) → 隐藏层(4096维)
+                    nn.ReLU(inplace=True),  # 激活函数
+                    nn.LayerNorm(4096),     # 层归一化
+                    
+                    # 额外的线性层
+                    nn.Linear(4096, 4096),  # 输出层：4096维 → 4096维
+                )
+                """
+
+
+
+                # 3. 时间嵌入网络
                 self.time_mlp = nn.Sequential(
                     SinusoidalPosEmb(4096),
                     nn.Linear(4096, 4096),
@@ -291,13 +338,17 @@ class Orion(MVXTwoStageDetector):
                     d_ffn=4096,
                     num_head=32,
                 )
+
+                # 4. 扩散解码器
                 self.diff_decoder = CustomTransformerDecoder(diff_decoder_layer, 2)
+                
+                # 5. 扩散调度器
                 self.diffusion_scheduler = DDIMScheduler(
                     num_train_timesteps=1000,
                     beta_schedule="scaled_linear",
                     prediction_type="sample",
                 )
-            elif self.use_mlp_decoder: 
+            elif self.use_mlp_decoder:  # 置 False
                 self.waypoint_decoder = nn.Sequential(
                     nn.Linear(4096, 4096 // 2),
                     nn.GELU(),
@@ -638,21 +689,34 @@ class Orion(MVXTwoStageDetector):
                     loss_vae_gen = torch.nan_to_num(loss_vae_gen)
                     losses.update(loss_vae_gen=loss_vae_gen)
                 elif self.use_diff_decoder:
-                    bs = B
+                    bs = B   # 批次大小
                     device = ego_feature.device
                     # 1. add truncated noise to the plan anchor
+                    # 获取预定义轨迹锚点并扩展到批次大小 # 形状: (bs, 20, 6, 2)
                     plan_anchor = self.plan_anchor.unsqueeze(0).repeat(bs,1,1,1)
+                    
+                    # 2. 轨迹归一化处理
                     odo_info_fut = self.norm_odo(plan_anchor)
+                    
+                    # 3. 生成随机时间步（用于扩散过程）
                     timesteps = torch.randint(
                         0, 50,
                         (bs,), device=device
                     )
+
+                    # 4. 创建随机噪声
                     noise = torch.randn(odo_info_fut.shape, device=device)
+                    
+                    # 5. 为原始轨迹添加噪声（扩散过程）
+                    # 输入轨迹点 ： noisy_traj_points (形状: (bs, 20, 6, 2))
+                    # 批次大小: bs， 轨迹模式数: 20， 每个轨迹的姿态点数: 6，每个姿态点的坐标: (x, y)
                     noisy_traj_points = self.diffusion_scheduler.add_noise(
                         original_samples=odo_info_fut,
                         noise=noise,
                         timesteps=timesteps,
                     ).float()
+
+                    # 6. 裁剪和反归一化处理
                     noisy_traj_points = torch.clamp(noisy_traj_points, min=-1, max=1)
                     noisy_traj_points = self.denorm_odo(noisy_traj_points)
 
@@ -660,19 +724,30 @@ class Orion(MVXTwoStageDetector):
                     # ============================================debug===========================================================
                     # self.noising_vis(self,plan_anchor,device)
                     # ============================================debug===========================================================
-                    ego_fut_mode = noisy_traj_points.shape[1]
-                    # 2. proj noisy_traj_points to the query
+                    ego_fut_mode = noisy_traj_points.shape[1]   # 7. 获取轨迹模式数量
+                    
+                    # 2. proj noisy_traj_points to the query 
+                    #  生成轨迹的正弦位置嵌入，输出形状 (bs, 20, 6, 512)
+                    # 位置编码的作用 ：将轨迹点的绝对坐标转换为具有相对位置关系的高维向量表示
+                    # 正弦位置编码 ：使用正弦和余弦函数生成不同频率的位置信息，能够更好地捕获相对位置关系
                     traj_pos_embed = gen_sineembed_for_position(noisy_traj_points,hidden_dim=512)
                    
-                    traj_pos_embed = traj_pos_embed.flatten(-2)
-                    traj_feature = self.plan_anchor_encoder(traj_pos_embed)
+                    # 合并最后两个维度 (bs, 20, 6, 512) -> (bs, 20, 6*512)
+                    traj_pos_embed = traj_pos_embed.flatten(-2)  # 扁平化处理
+
+                    #  编码轨迹特征
+                    traj_feature = self.plan_anchor_encoder(traj_pos_embed)  
                     traj_feature = traj_feature.view(bs,ego_fut_mode,-1)
-                    # 3. embed the timesteps
+                    
+                    # 3. embed the timesteps 生成时间嵌入
                     time_embed = self.time_mlp(timesteps)
                     time_embed = time_embed.view(bs,1,-1)
 
-                    # 4. begin the stacked decoder
-                    poses_reg_list, poses_cls_list = self.diff_decoder(traj_feature, noisy_traj_points, current_states, time_embed)
+                    # 4. begin the stacked decoder  扩散解码（去噪过程）
+                    poses_reg_list, poses_cls_list = self.diff_decoder(
+                        traj_feature, 
+                        noisy_traj_points, 
+                        current_states, time_embed)
                     targets = torch.cumsum(ego_fut_trajs,dim=-2).squeeze(1)
                     trajectory_loss_dict = {}
 
@@ -787,6 +862,21 @@ class Orion(MVXTwoStageDetector):
             # 并在 inference_ego() 中根据 special token 位置提取其隐藏状态作为 planning token，同时保证对话历史参与注意力
             history_input_output_id = []        # 累计历史问答
             vision_embeded = torch.cat([vision_embeded_obj, vision_embeded_map], dim=1) # (1, 513, 4096)
+            # LoadAnnoatationCriticalVQATest.__call__(results) 生成的 input_ids 是一个列表，每个元素是一个张量，形状为 (1, seq_len)
+            # 调用 CustomCollect3D.__call__ 收集所需字段
+#             模型推理 ： Orion.forward()
+
+            # - 使用收集到的 input_ids 进行VQA和轨迹规划
+            # - data['input_ids'] 包含tokenized后的输入序列
+            # - 结合视觉特征进行多模态推理
+            """
+            zhangxinTODO
+            ## 关键技术点
+            1. 数据处理流程 ：采用pipeline模式，每个变换都是一个可调用对象，通过 Compose 按顺序执行
+            2. 字段传递 ：通过results字典在不同变换间传递数据，实现数据的逐步处理和增强
+            3. 多模态融合 ： input_ids （文本）与视觉特征相结合，用于自动驾驶的VQA和轨迹规划任务
+            4. 特殊标记处理 ：支持使用特殊标记（如 <waypoint_ego> ）触发特定功能（如轨迹规划）
+            """
             for i, input_ids in enumerate(data['input_ids'][0]):
                 input_ids = input_ids.unsqueeze(0)
                 special_token_inputs = False
@@ -802,6 +892,7 @@ class Orion(MVXTwoStageDetector):
                 if self.use_gen_token and special_token_inputs: # must be the final round conversation
                     history_input_output_id.append(input_ids)
                     context_input_ids = torch.cat(history_input_output_id,dim=-1)
+                    # 使用
                     ego_feature = self.lm_head.inference_ego(
                         inputs=context_input_ids,
                         images=vision_embeded,
@@ -821,6 +912,8 @@ class Orion(MVXTwoStageDetector):
                         self.fut_ts = 6
                         if self.PROBABILISTIC:
                             # Do probabilistic computation
+                            # 基于当前状态和规划token，计算future分布的均值和对数标准差
+                            # 调用distribution_forward获取采样结果和输出分布
                             sample, output_distribution = self.distribution_forward(
                                 current_states, None, noise
                             )
@@ -1412,8 +1505,9 @@ class Orion(MVXTwoStageDetector):
 
     # distribution_forward() 先基于规划 token 得到 present 分布 (μ, σ)，若提供 GT 未来轨迹则拼接后得到 
     # future 分布；训练用 future 分布采样、推理用 present 分布，采样结果再沿时间步展开成 GRU 输入
+    # VAE 的前向传播，用于
     def distribution_forward(self, present_features, future_distribution_inputs=None, noise=None):
-
+        # 先基于规划 token 得到 present 分布 (μ, σ)，若提供 GT 未来轨迹则拼接后得到 future 分布
         b = present_features.shape[0]
         c = present_features.shape[1]
         present_mu, present_log_sigma = self.present_distribution(present_features)
@@ -1421,6 +1515,7 @@ class Orion(MVXTwoStageDetector):
         future_mu, future_log_sigma = None, None
         if future_distribution_inputs is not None:
             future_features = torch.cat([present_features, future_distribution_inputs], dim=2)
+            # 计算future分布的均值和对数标准差
             future_mu, future_log_sigma = self.future_distribution(future_features)
 
         if noise is None:
@@ -1429,13 +1524,14 @@ class Orion(MVXTwoStageDetector):
             else:
                 noise = torch.randn_like(present_mu)
         if self.training:
-            mu = future_mu
+            mu = future_mu   # 训练模式：从present分布采样，并添加噪声到future分布
             sigma = torch.exp(future_log_sigma)
         else:
-            mu = present_mu
+            mu = present_mu   # 推理模式：直接从future分布采样
             sigma = torch.exp(present_log_sigma)
         sample = mu + sigma * noise
 
+        # 调整sample维度以匹配后续处理需求
         sample = sample.permute(0, 2, 1).expand(b, self.latent_dim, c)
 
         output_distribution = {

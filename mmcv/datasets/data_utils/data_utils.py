@@ -529,37 +529,69 @@ def preprocess(
     training_mode: bool =True,
     only_one_system_prompt = False,
 ) -> Dict:
+    """
+    将多轮对话样本统一转换成模型可直接训练的(input_ids, labels)格式。
+    整体流程：
+    1. 根据对话模板风格（PLAIN/LLaMA-2/v1/mpt/其他）选择对应分支；
+    2. 拼接system-prompt + 多轮对话，形成完整文本；
+    3. 对文本进行tokenize，得到input_ids；
+    4. 复制input_ids作为labels，并把“人类提问”部分mask为IGNORE_INDEX，使模型仅学习GPT回复；
+    5. 返回字典供后续DataLoader使用。
+    """
+    # ---------- 1. 按对话风格快速分发 ----------
     if conversation_lib.default_conversation.sep_style == conversation_lib.SeparatorStyle.PLAIN:
+        # 纯文本对话，无特殊格式
         return preprocess_plain(sources, tokenizer)
     if conversation_lib.default_conversation.sep_style == conversation_lib.SeparatorStyle.LLAMA_2:
+        # LLaMA-2 风格：使用[/INST]等标记
         return preprocess_llama_2(sources, tokenizer, has_image=has_image)
     if conversation_lib.default_conversation.version.startswith("v1"):
-        return preprocess_v1(sources, tokenizer, has_image=has_image, training_mode=training_mode, only_one_system_prompt=only_one_system_prompt)
+        # v1模板：支持训练/推理模式，可控制system prompt是否只出现一次
+        return preprocess_v1(sources, tokenizer,
+                            has_image=has_image,
+                            training_mode=training_mode,
+                            only_one_system_prompt=only_one_system_prompt)
     if conversation_lib.default_conversation.version == "mpt":
+        # MPT模板：使用<MPT>风格分隔符
         return preprocess_mpt(sources, tokenizer)
-    
-    conversations = []
+
+    # ---------- 2. 通用模板处理（非上述特例） ----------
+    conversations = []  # 存放拼接后的完整对话字符串
     for source in sources:
+        # header: 系统级提示，物理上决定模型“性格”与“知识边界”
         header = f"{conversation_lib.default_conversation.system}\n\n"
+        # 将多轮角色标记（human/gpt）加上起始/结束信号，拼成一段文本
         conversation = _add_speaker_and_signal(header, source)
         conversations.append(conversation)
-    # tokenize conversations
-    def get_tokenize_len(prompts):
-        return [min(len(tokenizer_image_token(prompt, tokenizer)), tokenizer.model_max_length) for prompt in prompts]
 
+    # 工具函数：计算tokenize后的长度，用于后续mask
+    def get_tokenize_len(prompts):
+        # 限制不超过模型最大长度，防止OOM
+        return [min(len(tokenizer_image_token(prompt, tokenizer)), tokenizer.model_max_length)
+                for prompt in prompts]
+
+    # ---------- 3. tokenize ----------
     if has_image:
-        input_ids = [tokenizer_image_token(prompt, tokenizer, return_tensors='pt')[:tokenizer.model_max_length] for prompt in conversations]
+        # 含<image>标记，需用tokenizer_image_token特殊处理，返回List[Tensor]
+        input_ids = [tokenizer_image_token(prompt, tokenizer, return_tensors='pt')[:tokenizer.model_max_length]
+                     for prompt in conversations]
     else:
+        # 纯文本，直接调用tokenizer
         conversations_tokenized = _tokenize_fn(conversations, tokenizer)
         input_ids = conversations_tokenized["input_ids"]
 
-    targets = copy.deepcopy(input_ids)
+    # ---------- 4. 构建labels：复制input_ids后，把“人类”部分mask掉 ----------
+    targets = copy.deepcopy(input_ids)  # 物理上，labels与input_ids同形
     for target, source in zip(targets, sources):
+        # 计算每段对话（system + 每轮QA）的token长度
         if has_image:
             tokenized_lens = get_tokenize_len([header] + [s["value"] for s in source])
         else:
             tokenized_lens = _tokenize_fn([header] + [s["value"] for s in source], tokenizer)["input_ids_lens"]
+        # 记录每句话的说话人，用于判断哪些位置要mask
         speakers = [sentence["from"] for sentence in source]
+        # 将human对应位置设为IGNORE_INDEX，使损失函数跳过这些token
         _mask_targets(target, tokenized_lens, speakers)
 
+    # ---------- 5. 返回结果 ----------
     return dict(input_ids=input_ids, labels=targets)

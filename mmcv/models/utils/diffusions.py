@@ -12,6 +12,7 @@ from typing import Any, List, Dict, Optional, Union, Tuple
 import math
 from torch import Tensor, permute
 
+# 单个解码层，包含了注意力机制、前馈网络等核心组件
 class CustomTransformerDecoderLayer(nn.Module):
     def __init__(self, 
                  num_poses,
@@ -66,7 +67,7 @@ def _get_clones(module, N):
     # FIXME: copy.deepcopy() is not defined on nn.module
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
-
+# 一个容器类，它包含多个 CustomTransformerDecoderLayer 实例，通过 _get_clones 函数创建多个相同结构的层并堆叠起来
 class CustomTransformerDecoder(nn.Module):
     def __init__(
         self, 
@@ -79,6 +80,11 @@ class CustomTransformerDecoder(nn.Module):
         self.layers = _get_clones(decoder_layer, num_layers)
         self.num_layers = num_layers
     
+    """
+    traj_feature = self.plan_anchor_encoder(traj_pos_embed)     来自 
+    traj_feature = traj_feature.view(bs,ego_fut_mode,-1)
+    
+    """
     def forward(self, 
                 traj_feature, 
                 noisy_traj_points, 
@@ -108,8 +114,19 @@ class DiffMotionPlanningRefinementModule(nn.Module):
         self.embed_dims = embed_dims
         self.ego_fut_ts = ego_fut_ts
         self.ego_fut_mode = ego_fut_mode
+        # plan_cls_branch是一个分类分支，用于预测轨迹的分类分数
+        # 使用nn.Sequential顺序容器，将多个层按顺序连接
+        # 数据按顺序通过容器中的每一层, 每个层的输出作为下一层的输入
         self.plan_cls_branch = nn.Sequential(
+            # *运算符是Python的解包操作符，将linear_relu_ln返回的层列表解包为独立参数
+            # 使得列表中的每个层都作为 nn.Sequential 的单独参数传入
+            # linear_relu_ln(embed_dims, 1, 2)返回的层结构：
+            # [nn.Linear(embed_dims, embed_dims), nn.ReLU(), nn.LayerNorm(embed_dims),
+            #  nn.Linear(embed_dims, embed_dims), nn.ReLU(), nn.LayerNorm(embed_dims)]
             *linear_relu_ln(embed_dims, 1, 2),
+            # 额外添加的线性层是 输出层，将embed_dims维特征映射到1维分类分数
+            # 这是必要的，因为linear_relu_ln只生成保持embed_dims维度的层序列
+            # 而分类任务需要将特征映射到特定类别的输出空间(这里是1维)
             nn.Linear(embed_dims, 1),
         )
         self.plan_reg_branch = nn.Sequential(
@@ -233,31 +250,51 @@ class ModulationLayer(nn.Module):
         traj_feature = traj_feature * (1 + scale) + shift
         return traj_feature
 
+# 将输入的位置张量 pos_tensor 转换为位置编码
 def gen_sineembed_for_position(pos_tensor, hidden_dim=256):
     """Mostly copy-paste from https://github.com/IDEA-opensource/DAB-DETR/
     """
-    half_hidden_dim = hidden_dim // 2
+
+    # pos_tensor 形状：(bs, 20, 6, 2) → [批次大小, 轨迹模式数, 姿态点数, (x,y)坐标]
+
+    # 计算隐藏维度的一半
+    half_hidden_dim = hidden_dim // 2       # 128
     scale = 2 * math.pi
+
+    # 创建概率向量
     dim_t = torch.arange(half_hidden_dim, dtype=torch.float32, device=pos_tensor.device)
     dim_t = 10000 ** (2 * (dim_t // 2) / half_hidden_dim)
-    x_embed = pos_tensor[..., 0] * scale
-    y_embed = pos_tensor[..., 1] * scale
-    pos_x = x_embed[..., None] / dim_t
-    pos_y = y_embed[..., None] / dim_t
+    
+    # 分别处理 x 和 y 坐标
+    x_embed = pos_tensor[..., 0] * scale        # 形状: (bs, 20, 6)
+    y_embed = pos_tensor[..., 1] * scale        # 形状: (bs, 20, 6)
+    
+    # 应用正弦位置编码公式
+    pos_x = x_embed[..., None] / dim_t          # 形状: (bs, 20, 6, 128)
+    pos_y = y_embed[..., None] / dim_t          # 形状: (bs, 20, 6, 128)
+
+    # 对 x 和 y 坐标奇数维度应用正弦，偶数维度应用余弦函数
     pos_x = torch.stack((pos_x[..., 0::2].sin(), pos_x[..., 1::2].cos()), dim=-1).flatten(-2)
     pos_y = torch.stack((pos_y[..., 0::2].sin(), pos_y[..., 1::2].cos()), dim=-1).flatten(-2)
-    pos = torch.cat((pos_y, pos_x), dim=-1)
+    
+    # 拼接 x 和 y 坐标的正弦和余弦表示
+    pos = torch.cat((pos_y, pos_x), dim=-1)     # 形状: (bs, 20, 6, 256)
     return pos
 
+# 用于构建 MLP 层，包含多个线性层、ReLU 激活函数和层归一化
 def linear_relu_ln(embed_dims, in_loops, out_loops, input_dims=None):
     if input_dims is None:
         input_dims = embed_dims
     layers = []
+
+    # 外层循环控制 LayerNorm 的间隔
     for _ in range(out_loops):
+        # 内层循环控制线性层的数量
         for _ in range(in_loops):
             layers.append(nn.Linear(input_dims, embed_dims))
             layers.append(nn.ReLU(inplace=True))
             input_dims = embed_dims
+        # 每层外层循环结束添加 LayerNorm 层
         layers.append(nn.LayerNorm(embed_dims))
     return layers
 
